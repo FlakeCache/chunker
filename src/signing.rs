@@ -6,7 +6,7 @@ use rand::rngs::OsRng;
 pub enum SigningError {
     #[error("invalid_secret_key: expected 32 bytes")]
     InvalidSecretKey,
-    #[error("invalid_public_key_length")]
+    #[error("invalid_public_key: expected 32 bytes")]
     InvalidPublicKey,
     #[error("invalid_signature: expected 64 bytes")]
     InvalidSignature,
