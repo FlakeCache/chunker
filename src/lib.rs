@@ -1,14 +1,4 @@
-//! # Chunker
-//!
-//! High-performance content-defined chunking (FastCDC) for Nix NARs.
-//!
-//! This library provides:
-//! - FastCDC content-defined chunking algorithm
-//! - Multiple compression codecs (zstd, xz, bzip2)
-//! - Cryptographic signing (Ed25519)
-//! - Hash computation (SHA256, Nix base32)
-//!
-//! When compiled with the `nif` feature, provides Rustler NIF bindings for Elixir.
+#![doc = include_str!("../README.md")]
 
 pub mod chunking;
 pub mod compression;

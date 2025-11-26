@@ -39,7 +39,7 @@ hash = Chunker.sha256_hash(data)
 ### As Rust Library
 
 ```rust
-use chunker::fastcdc::FastCDC;
+use fastcdc::v2020::FastCDC;
 
 let data = b"data to chunk";
 let chunker = FastCDC::new(data, 16_384, 65_536, 262_144);
