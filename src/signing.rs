@@ -8,7 +8,7 @@ pub enum SigningError {
     InvalidSecretKey,
     #[error("invalid_public_key_length")]
     InvalidPublicKey,
-    #[error("invalid_signature_length")]
+    #[error("invalid_signature: expected 64 bytes")]
     InvalidSignature,
     #[error("decode_error")]
     DecodeError,
