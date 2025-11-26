@@ -4,7 +4,7 @@ use rand::rngs::OsRng;
 
 #[derive(Debug, thiserror::Error, Clone, Copy)]
 pub enum SigningError {
-    #[error("invalid_secret_key_length")]
+    #[error("invalid_secret_key: expected 32 bytes")]
     InvalidSecretKey,
     #[error("invalid_public_key_length")]
     InvalidPublicKey,
