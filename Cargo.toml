@@ -19,6 +19,7 @@ default = []
 # build focused on the pure Rust library. Enable with `--features nif` when
 # building the NIF cdylib for Elixir.
 nif = ["rustler"]
+blake3 = ["dep:blake3"]
 
 [lib]
 name = "chunker"
@@ -32,6 +33,7 @@ thiserror = "1.0"
 # Cryptography
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
 sha2 = "0.10.9"
+blake3 = { version = "1.5.4", optional = true }
 
 # Compression
 zstd = "0.13.3"

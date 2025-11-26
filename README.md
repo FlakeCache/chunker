@@ -9,7 +9,7 @@ High-performance content-defined chunking (FastCDC) for Nix NARs.
 - **FastCDC Chunking**: Content-defined chunking algorithm for optimal deduplication
 - **Multiple Compression**: zstd, xz (LZMA2), bzip2 support
 - **Cryptographic Signing**: Ed25519 signatures for data authenticity
-- **Hash Computation**: SHA256 and Nix base32 encoding
+- **Hash Computation**: SHA256 (canonical), optional BLAKE3, and Nix base32 encoding
 - **Rustler NIF**: Native Elixir bindings for high performance
 - **Standalone Library**: Use as a Rust library independent of Elixir
 
@@ -23,8 +23,10 @@ alias FlakecacheApp.Native.Chunker
 # Hash computation
 hash = Chunker.sha256_hash(data)
 
-# Content-defined chunking with deduplication
+# Content-defined chunking with deduplication (SHA256 hashes by default)
 {:ok, chunks} = Chunker.chunk_data(data, 16_384, 65_536, 262_144)
+# Enable the optional `blake3` Cargo feature to allow faster chunk hashing:
+# {:ok, chunks} = Chunker.chunk_data(data, 16_384, 65_536, 262_144, "blake3")
 
 # Compression/decompression
 {:ok, compressed} = Chunker.compress_zstd(data, 3)
@@ -86,7 +88,7 @@ cargo tarpaulin --out Html --output-dir cover/
 
 - **`chunking.rs`** - FastCDC chunking implementation
 - **`compression.rs`** - zstd/xz/bzip2 compression handlers
-- **`hashing.rs`** - SHA256 and Nix base32 encoding
+- **`hashing.rs`** - SHA256 (default), optional BLAKE3, and Nix base32 encoding
 - **`signing.rs`** - Ed25519 keypair and signature operations
 - **`lib.rs`** - Rustler NIF initialization
 

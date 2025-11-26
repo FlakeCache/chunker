@@ -1,5 +1,21 @@
 use sha2::{Digest, Sha256};
 
+/// Supported hashing algorithms for chunking
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HashAlgorithm {
+    /// SHA-256 (default, canonical integrity hash)
+    Sha256,
+    /// BLAKE3 (faster, optional)
+    #[cfg(feature = "blake3")]
+    Blake3,
+}
+
+impl Default for HashAlgorithm {
+    fn default() -> Self {
+        Self::Sha256
+    }
+}
+
 #[derive(Debug, thiserror::Error, Clone, Copy)]
 pub enum HashingError {
     #[error("invalid_base32_character")]
@@ -16,6 +32,38 @@ pub fn sha256_hash(data: &[u8]) -> String {
     hasher.update(data);
     let result = hasher.finalize();
     hex::encode(result)
+}
+
+/// Compute BLAKE3 hash of data
+/// Returns: hex string
+#[cfg(feature = "blake3")]
+pub fn blake3_hash(data: &[u8]) -> String {
+    let hash = blake3::hash(data);
+    hash.to_hex().to_string()
+}
+
+/// Compute a hash using the selected algorithm
+/// Defaults to SHA-256
+pub fn hash_bytes(data: &[u8], algorithm: HashAlgorithm) -> String {
+    match algorithm {
+        HashAlgorithm::Sha256 => sha256_hash(data),
+        #[cfg(feature = "blake3")]
+        HashAlgorithm::Blake3 => blake3_hash(data),
+    }
+}
+
+/// Parse a string hash algorithm identifier
+///
+/// Recognized values (case-insensitive):
+/// - "sha256" (default)
+/// - "blake3" (when the `blake3` feature is enabled)
+pub fn parse_hash_algorithm(name: &str) -> Option<HashAlgorithm> {
+    match name.to_ascii_lowercase().as_str() {
+        "sha256" => Some(HashAlgorithm::Sha256),
+        #[cfg(feature = "blake3")]
+        "blake3" => Some(HashAlgorithm::Blake3),
+        _ => None,
+    }
 }
 
 /// Encode data to Nix's base32 format

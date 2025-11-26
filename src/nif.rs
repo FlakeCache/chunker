@@ -17,6 +17,7 @@ mod atoms {
         decode_error,
         verification_failed,
         invalid_base32,
+        invalid_hash_algorithm,
         zstd_compression_failed,
         zstd_decompression_failed,
         xz_compression_failed,
@@ -39,7 +40,8 @@ rustler::init!(
         decompress_zstd,
         compress_xz,
         decompress_xz,
-        chunk_data
+        chunk_data_default,
+        chunk_data_with_hash
     ]
 );
 fn binary_from_vec<'a>(env: Env<'a>, data: Vec<u8>) -> NifResult<Binary<'a>> {
@@ -175,18 +177,14 @@ fn decompress_xz<'a>(env: Env<'a>, data: Binary<'a>) -> NifResult<Binary<'a>> {
 // =============================================================================
 
 #[rustler::nif]
-fn chunk_data<'a>(
-    _env: Env<'a>,
-    data: Binary<'a>,
-    min_size: Option<u32>,
-    avg_size: Option<u32>,
-    max_size: Option<u32>,
+fn chunk_data_internal(
+    data: &[u8],
+    min: usize,
+    avg: usize,
+    max: usize,
+    hash_algorithm: Option<hashing::HashAlgorithm>,
 ) -> NifResult<Vec<(String, u32, u32)>> {
-    let min = min_size.unwrap_or(16_384) as usize;
-    let avg = avg_size.unwrap_or(65_536) as usize;
-    let max = max_size.unwrap_or(262_144) as usize;
-
-    match chunking::chunk_data(data.as_slice(), Some(min), Some(avg), Some(max)) {
+    match chunking::chunk_data(data, Some(min), Some(avg), Some(max), hash_algorithm) {
         Ok(chunks) => Ok(chunks
             .into_iter()
             .map(|(hash, offset, length)| {
@@ -201,4 +199,46 @@ fn chunk_data<'a>(
             atoms::chunk_bounds_invalid(),
         ))),
     }
+}
+
+#[rustler::nif(name = "chunk_data")]
+fn chunk_data_default<'a>(
+    _env: Env<'a>,
+    data: Binary<'a>,
+    min_size: Option<u32>,
+    avg_size: Option<u32>,
+    max_size: Option<u32>,
+) -> NifResult<Vec<(String, u32, u32)>> {
+    let min = min_size.unwrap_or(16_384) as usize;
+    let avg = avg_size.unwrap_or(65_536) as usize;
+    let max = max_size.unwrap_or(262_144) as usize;
+
+    chunk_data_internal(data.as_slice(), min, avg, max, None)
+}
+
+#[rustler::nif(name = "chunk_data")]
+fn chunk_data_with_hash<'a>(
+    _env: Env<'a>,
+    data: Binary<'a>,
+    min_size: Option<u32>,
+    avg_size: Option<u32>,
+    max_size: Option<u32>,
+    hash_algorithm: Option<String>,
+) -> NifResult<Vec<(String, u32, u32)>> {
+    let min = min_size.unwrap_or(16_384) as usize;
+    let avg = avg_size.unwrap_or(65_536) as usize;
+    let max = max_size.unwrap_or(262_144) as usize;
+
+    let parsed_algorithm = match hash_algorithm {
+        None => None,
+        Some(name) => hashing::parse_hash_algorithm(&name),
+    };
+
+    if hash_algorithm.is_some() && parsed_algorithm.is_none() {
+        return Err(rustler::error::Error::Term(Box::new(
+            atoms::invalid_hash_algorithm(),
+        )));
+    }
+
+    chunk_data_internal(data.as_slice(), min, avg, max, parsed_algorithm)
 }
