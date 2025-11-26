@@ -15,6 +15,9 @@ pub mod compression;
 pub mod hashing;
 pub mod signing;
 
+#[cfg(feature = "nif")]
+pub mod nif;
+
 #[cfg(test)]
 mod tests {
     use super::*;

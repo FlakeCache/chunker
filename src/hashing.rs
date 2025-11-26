@@ -1,24 +1,27 @@
-use rustler::{Binary, Error, NifResult};
 use sha2::{Digest, Sha256};
+
+#[derive(Debug, thiserror::Error, Clone, Copy)]
+pub enum HashingError {
+    #[error("invalid_base32_character")]
+    InvalidCharacter,
+}
 
 // Nix uses a custom base32 alphabet
 pub const NIX_BASE32_ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
 /// Compute SHA256 hash of data
 /// Returns: hex string
-#[rustler::nif]
-pub fn sha256_hash(data: Binary) -> String {
+pub fn sha256_hash(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(data.as_slice());
+    hasher.update(data);
     let result = hasher.finalize();
     hex::encode(result)
 }
 
 /// Encode data to Nix's base32 format
 /// Nix uses a custom alphabet for base32 encoding
-#[rustler::nif]
-pub fn nix_base32_encode(data: Binary) -> String {
-    let bytes = data.as_slice();
+pub fn nix_base32_encode(data: &[u8]) -> String {
+    let bytes = data;
     let mut result = String::new();
 
     // Nix base32 encoding
@@ -46,8 +49,7 @@ pub fn nix_base32_encode(data: Binary) -> String {
 }
 
 /// Decode Nix base32 encoded string
-#[rustler::nif]
-pub fn nix_base32_decode(encoded: &str) -> NifResult<Vec<u8>> {
+pub fn nix_base32_decode(encoded: &str) -> Result<Vec<u8>, HashingError> {
     let mut result = Vec::new();
     let mut bits = 0u64;
     let mut bit_count = 0u8;
@@ -56,7 +58,7 @@ pub fn nix_base32_decode(encoded: &str) -> NifResult<Vec<u8>> {
         let value = NIX_BASE32_ALPHABET
             .iter()
             .position(|&b| b == c as u8)
-            .ok_or(Error::BadArg)? as u64;
+            .ok_or(HashingError::InvalidCharacter)? as u64;
 
         bits |= value << bit_count;
         bit_count += 5;
