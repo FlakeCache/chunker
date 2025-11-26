@@ -26,8 +26,22 @@ mod atoms {
 }
 
 // Rustler NIF module initialization
-rustler::init!("Elixir.FlakecacheApp.Native.Chunker");
-
+rustler::init!(
+    "Elixir.FlakecacheApp.Native.Chunker",
+    [
+        generate_keypair,
+        sign_data,
+        verify_signature,
+        sha256_hash,
+        nix_base32_encode,
+        nix_base32_decode,
+        compress_zstd,
+        decompress_zstd,
+        compress_xz,
+        decompress_xz,
+        chunk_data
+    ]
+);
 fn binary_from_vec<'a>(env: Env<'a>, data: Vec<u8>) -> NifResult<Binary<'a>> {
     let mut owned = OwnedBinary::new(data.len())
         .ok_or_else(|| rustler::error::Error::RaiseTerm(Box::new("alloc_failed")))?;
