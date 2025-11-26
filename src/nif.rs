@@ -112,8 +112,7 @@ fn sha256_hash<'a>(env: Env<'a>, data: Binary<'a>) -> NifResult<String> {
 }
 
 #[rustler::nif]
-fn nix_base32_encode<'a>(env: Env<'a>, data: Binary<'a>) -> NifResult<String> {
-    let _ = env;
+fn nix_base32_encode<'a>(_env: Env<'a>, data: Binary<'a>) -> NifResult<String> {
     Ok(hashing::nix_base32_encode(data.as_slice()))
 }
 
