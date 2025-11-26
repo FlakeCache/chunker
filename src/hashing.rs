@@ -1,4 +1,5 @@
 use sha2::{Digest, Sha256};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
 #[derive(Debug, thiserror::Error, Clone, Copy)]
 pub enum HashingError {
@@ -71,4 +72,46 @@ pub fn nix_base32_decode(encoded: &str) -> Result<Vec<u8>, HashingError> {
     }
 
     Ok(result)
+}
+
+#[derive(Debug, Clone)]
+pub struct HashJob {
+    pub index: usize,
+    pub offset: usize,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HashResult {
+    pub index: usize,
+    pub offset: usize,
+    pub length: usize,
+    pub digest: String,
+}
+
+/// Spawn a bounded hashing worker that preserves submission order.
+/// The worker terminates when it receives `None` via the job channel.
+pub fn spawn_hashing_worker(bound: usize) -> (SyncSender<Option<HashJob>>, Receiver<HashResult>) {
+    let (job_tx, job_rx) = sync_channel(bound);
+    let (result_tx, result_rx) = sync_channel(bound);
+
+    let _ = std::thread::spawn(move || {
+        while let Ok(message) = job_rx.recv() {
+            let Some(job): Option<HashJob> = message else {
+                break;
+            };
+            let digest = sha256_hash(&job.data);
+            let result = HashResult {
+                index: job.index,
+                offset: job.offset,
+                length: job.data.len(),
+                digest,
+            };
+            if result_tx.send(result).is_err() {
+                break;
+            }
+        }
+    });
+
+    (job_tx, result_rx)
 }
