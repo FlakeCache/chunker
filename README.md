@@ -27,8 +27,14 @@ hash = Chunker.sha256_hash(data)
 {:ok, chunks} = Chunker.chunk_data(data, 16_384, 65_536, 262_144)
 
 # Compression/decompression
-{:ok, compressed} = Chunker.compress_zstd(data, 3)
-{:ok, original} = Chunker.decompress_zstd(compressed)
+{:ok, zstd} = Chunker.compress_zstd(data, 3)
+{:ok, original} = Chunker.decompress_zstd(zstd)
+
+{:ok, xz} = Chunker.compress_xz(data, 6)
+{:ok, original} = Chunker.decompress_xz(xz)
+
+{:ok, bzip2} = Chunker.compress_bzip2(data, 6)
+{:ok, original} = Chunker.decompress_bzip2(bzip2)
 
 # Ed25519 signing
 {:ok, {secret_key, public_key}} = Chunker.generate_keypair()
@@ -85,7 +91,7 @@ cargo tarpaulin --out Html --output-dir cover/
 ## Module Structure
 
 - **`chunking.rs`** - FastCDC chunking implementation
-- **`compression.rs`** - zstd/xz/bzip2 compression handlers
+- **`compression.rs`** - zstd/xz/bzip2 compression handlers (size-limited decompression)
 - **`hashing.rs`** - SHA256 and Nix base32 encoding
 - **`signing.rs`** - Ed25519 keypair and signature operations
 - **`lib.rs`** - Rustler NIF initialization

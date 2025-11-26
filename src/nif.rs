@@ -21,6 +21,8 @@ mod atoms {
         zstd_decompression_failed,
         xz_compression_failed,
         xz_decompression_failed,
+        bzip2_compression_failed,
+        bzip2_decompression_failed,
         chunk_bounds_invalid,
     }
 }
@@ -39,6 +41,8 @@ rustler::init!(
         decompress_zstd,
         compress_xz,
         decompress_xz,
+        compress_bzip2,
+        decompress_bzip2,
         chunk_data
     ]
 );
@@ -166,6 +170,26 @@ fn decompress_xz<'a>(env: Env<'a>, data: Binary<'a>) -> NifResult<Binary<'a>> {
         Ok(decompressed) => binary_from_vec(env, decompressed),
         Err(_) => Err(rustler::error::Error::Term(Box::new(
             atoms::xz_decompression_failed(),
+        ))),
+    }
+}
+
+#[rustler::nif]
+fn compress_bzip2<'a>(env: Env<'a>, data: Binary<'a>, level: Option<u32>) -> NifResult<Binary<'a>> {
+    match compression::compress_bzip2(data.as_slice(), level) {
+        Ok(compressed) => binary_from_vec(env, compressed),
+        Err(_) => Err(rustler::error::Error::Term(Box::new(
+            atoms::bzip2_compression_failed(),
+        ))),
+    }
+}
+
+#[rustler::nif]
+fn decompress_bzip2<'a>(env: Env<'a>, data: Binary<'a>) -> NifResult<Binary<'a>> {
+    match compression::decompress_bzip2(data.as_slice()) {
+        Ok(decompressed) => binary_from_vec(env, decompressed),
+        Err(_) => Err(rustler::error::Error::Term(Box::new(
+            atoms::bzip2_decompression_failed(),
         ))),
     }
 }
