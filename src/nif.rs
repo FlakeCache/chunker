@@ -4,7 +4,7 @@
 use rustler::types::binary::OwnedBinary;
 use rustler::{Binary, Env, NifResult};
 
-use crate::{chunking, compression, hashing, signing};
+use crate::{chunking, compression, hashing, manifest, signing};
 
 mod atoms {
     rustler::atoms! {
@@ -22,6 +22,9 @@ mod atoms {
         xz_compression_failed,
         xz_decompression_failed,
         chunk_bounds_invalid,
+        manifest_serialization_failed,
+        invalid_manifest_format,
+        invalid_compression_method,
     }
 }
 
@@ -39,7 +42,8 @@ rustler::init!(
         decompress_zstd,
         compress_xz,
         decompress_xz,
-        chunk_data
+        chunk_data,
+        chunk_data_with_manifest
     ]
 );
 fn binary_from_vec<'a>(env: Env<'a>, data: Vec<u8>) -> NifResult<Binary<'a>> {
@@ -199,6 +203,85 @@ fn chunk_data<'a>(
             .collect()),
         Err(chunking::ChunkingError::Bounds { .. }) => Err(rustler::error::Error::Term(Box::new(
             atoms::chunk_bounds_invalid(),
+        ))),
+        Err(chunking::ChunkingError::Manifest(_)) => Err(rustler::error::Error::Term(Box::new(
+            atoms::manifest_serialization_failed(),
+        ))),
+    }
+}
+
+#[rustler::nif]
+fn chunk_data_with_manifest<'a>(
+    env: Env<'a>,
+    data: Binary<'a>,
+    min_size: Option<u32>,
+    avg_size: Option<u32>,
+    max_size: Option<u32>,
+    compression_method: Option<String>,
+    compression_level: Option<i32>,
+    manifest_format: Option<String>,
+) -> NifResult<(Vec<(String, u32, u32)>, Binary<'a>)> {
+    let compression_settings = match compression_method
+        .as_deref()
+        .unwrap_or("zstd")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "zstd" => compression::CompressionSettings::zstd(compression_level),
+        "xz" => compression::CompressionSettings::xz(compression_level.map(|level| level as u32)),
+        _ => {
+            return Err(rustler::error::Error::Term(Box::new(
+                atoms::invalid_compression_method(),
+            )))
+        }
+    };
+
+    let format = match manifest_format
+        .as_deref()
+        .unwrap_or("json")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "json" => manifest::ManifestFormat::Json,
+        "cbor" => manifest::ManifestFormat::Cbor,
+        _ => {
+            return Err(rustler::error::Error::Term(Box::new(
+                atoms::invalid_manifest_format(),
+            )))
+        }
+    };
+
+    let min = min_size.unwrap_or(16_384) as usize;
+    let avg = avg_size.unwrap_or(65_536) as usize;
+    let max = max_size.unwrap_or(262_144) as usize;
+
+    match chunking::chunk_data_with_manifest_bytes(
+        data.as_slice(),
+        Some(min),
+        Some(avg),
+        Some(max),
+        compression_settings,
+        format,
+    ) {
+        Ok((chunks, manifest_bytes)) => {
+            let chunk_records = chunks
+                .into_iter()
+                .map(|(hash, offset, length)| {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let offset_u32 = offset as u32;
+                    #[allow(clippy::cast_possible_truncation)]
+                    let length_u32 = length as u32;
+                    (hash, offset_u32, length_u32)
+                })
+                .collect();
+
+            Ok((chunk_records, binary_from_vec(env, manifest_bytes)?))
+        }
+        Err(chunking::ChunkingError::Bounds { .. }) => Err(rustler::error::Error::Term(Box::new(
+            atoms::chunk_bounds_invalid(),
+        ))),
+        Err(chunking::ChunkingError::Manifest(_)) => Err(rustler::error::Error::Term(Box::new(
+            atoms::manifest_serialization_failed(),
         ))),
     }
 }

@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
 #[derive(Debug, thiserror::Error)]
@@ -14,6 +15,48 @@ pub enum CompressionError {
 /// Protects against decompression bomb attacks where a small compressed payload
 /// expands to exhaust memory (e.g., 1KB → 10GB).
 const MAX_DECOMPRESSED_SIZE: u64 = 10 * 1024 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CompressionMethod {
+    Zstd,
+    Xz,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompressionSettings {
+    pub method: CompressionMethod,
+    pub level: Option<i32>,
+}
+
+impl CompressionSettings {
+    #[must_use]
+    pub const fn zstd(level: Option<i32>) -> Self {
+        Self {
+            method: CompressionMethod::Zstd,
+            level,
+        }
+    }
+
+    #[must_use]
+    pub fn xz(level: Option<u32>) -> Self {
+        Self {
+            method: CompressionMethod::Xz,
+            level: level.map(|value| value as i32),
+        }
+    }
+
+    #[must_use]
+    pub const fn default_zstd() -> Self {
+        Self::zstd(Some(3))
+    }
+
+    pub fn compress(&self, data: &[u8]) -> Result<Vec<u8>, CompressionError> {
+        match self.method {
+            CompressionMethod::Zstd => compress_zstd(data, self.level),
+            CompressionMethod::Xz => compress_xz(data, self.level.map(|level| level as u32)),
+        }
+    }
+}
 
 /// Compress data using `zstd`
 /// Args: data (binary), `level` (optional, default 3)
