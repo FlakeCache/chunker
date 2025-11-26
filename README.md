@@ -7,6 +7,7 @@ High-performance content-defined chunking (FastCDC) for Nix NARs.
 ## Features
 
 - **FastCDC Chunking**: Content-defined chunking algorithm for optimal deduplication
+- **QuickCDC (feature flag)**: Lightweight gear-hash chunker with fixed-mask style boundaries
 - **Multiple Compression**: zstd, xz (LZMA2), bzip2 support
 - **Cryptographic Signing**: Ed25519 signatures for data authenticity
 - **Hash Computation**: SHA256 and Nix base32 encoding
@@ -23,8 +24,8 @@ alias FlakecacheApp.Native.Chunker
 # Hash computation
 hash = Chunker.sha256_hash(data)
 
-# Content-defined chunking with deduplication
-{:ok, chunks} = Chunker.chunk_data(data, 16_384, 65_536, 262_144)
+# Content-defined chunking with deduplication (strategy selectable)
+{:ok, chunks} = Chunker.chunk_data(data, 16_384, 65_536, 262_144, "fastcdc")
 
 # Compression/decompression
 {:ok, compressed} = Chunker.compress_zstd(data, 3)
@@ -39,11 +40,19 @@ hash = Chunker.sha256_hash(data)
 ### As Rust Library
 
 ```rust
-use chunker::fastcdc::FastCDC;
+use chunker::chunking::{
+    chunk_boundaries_with_strategy, ChunkingStrategyKind,
+};
 
 let data = b"data to chunk";
-let chunker = FastCDC::new(data, 16_384, 65_536, 262_144);
-for chunk in chunker {
+let chunks = chunk_boundaries_with_strategy(
+    data,
+    Some(16_384),
+    Some(65_536),
+    Some(262_144),
+    ChunkingStrategyKind::FastCdc,
+)?;
+for chunk in chunks {
     println!("Chunk at {}: {} bytes", chunk.offset, chunk.length);
 }
 ```

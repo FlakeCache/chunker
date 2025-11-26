@@ -22,6 +22,9 @@ mod atoms {
         xz_compression_failed,
         xz_decompression_failed,
         chunk_bounds_invalid,
+        unknown_chunk_strategy,
+        quickcdc_not_enabled,
+        invalid_chunk_parameters,
     }
 }
 
@@ -181,12 +184,40 @@ fn chunk_data<'a>(
     min_size: Option<u32>,
     avg_size: Option<u32>,
     max_size: Option<u32>,
+    strategy: Option<String>,
 ) -> NifResult<Vec<(String, u32, u32)>> {
     let min = min_size.unwrap_or(16_384) as usize;
     let avg = avg_size.unwrap_or(65_536) as usize;
     let max = max_size.unwrap_or(262_144) as usize;
 
-    match chunking::chunk_data(data.as_slice(), Some(min), Some(avg), Some(max)) {
+    let strategy = match strategy.as_deref() {
+        Some("fastcdc") | None => chunking::ChunkingStrategyKind::FastCdc,
+        Some("quickcdc") => {
+            #[cfg(feature = "quickcdc")]
+            {
+                chunking::ChunkingStrategyKind::QuickCdc
+            }
+            #[cfg(not(feature = "quickcdc"))]
+            {
+                return Err(rustler::error::Error::Term(Box::new(
+                    atoms::quickcdc_not_enabled(),
+                )));
+            }
+        }
+        Some(_) => {
+            return Err(rustler::error::Error::Term(Box::new(
+                atoms::unknown_chunk_strategy(),
+            )))
+        }
+    };
+
+    match chunking::chunk_data_with_strategy(
+        data.as_slice(),
+        Some(min),
+        Some(avg),
+        Some(max),
+        strategy,
+    ) {
         Ok(chunks) => Ok(chunks
             .into_iter()
             .map(|(hash, offset, length)| {
@@ -200,5 +231,8 @@ fn chunk_data<'a>(
         Err(chunking::ChunkingError::Bounds { .. }) => Err(rustler::error::Error::Term(Box::new(
             atoms::chunk_bounds_invalid(),
         ))),
+        Err(chunking::ChunkingError::InvalidParameters { .. }) => Err(rustler::error::Error::Term(
+            Box::new(atoms::invalid_chunk_parameters()),
+        )),
     }
 }
