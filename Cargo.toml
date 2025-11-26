@@ -19,6 +19,7 @@ default = []
 # build focused on the pure Rust library. Enable with `--features nif` when
 # building the NIF cdylib for Elixir.
 nif = ["rustler"]
+gpu = ["wgpu", "pollster", "bytemuck", "futures-intrusive"]
 
 [lib]
 name = "chunker"
@@ -41,6 +42,12 @@ bzip2 = "0.6.1"
 # Content-defined chunking
 fastcdc = "3.2.1"
 
+# GPU (optional)
+wgpu = { version = "0.20.1", optional = true }
+pollster = { version = "0.3.0", optional = true }
+bytemuck = { version = "1.16.1", optional = true, features = ["derive"] }
+futures-intrusive = { version = "0.5.0", optional = true }
+
 # Serialization
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -54,6 +61,9 @@ hex = "0.4.3"
 
 # Base64 encoding with strict padding validation
 base64 = "0.22.1"
+
+[dev-dependencies]
+criterion = "0.5"
 
 # =============================================================================
 # Enterprise-Grade Clippy Lints Configuration
