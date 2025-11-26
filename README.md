@@ -36,6 +36,23 @@ hash = Chunker.sha256_hash(data)
 :ok = Chunker.verify_signature(data, signature, public_key)
 ```
 
+### Preset profiles
+
+Common chunking and compression presets are provided so you can pick sensible
+defaults without tuning:
+
+| Profile | Chunk sizes (min/avg/max) | Compressor | Level | Notes |
+| --- | --- | --- | --- | --- |
+| `balanced` | 16KB / 64KB / 256KB | zstd | 3 | Mirrors current defaults; good mix of throughput and deduplication. |
+| `throughput_optimized` | 32KB / 128KB / 512KB | zstd | 1 | Fewer, larger chunks and faster compression for high ingest speed. |
+| `archival` | 8KB / 32KB / 128KB | xz | 6 | Smaller chunks and stronger compression for maximum deduplication. |
+
+In Rust you can fetch these presets with helper constructors like
+`PolicyProfile::balanced()` and feed the sizes directly into `FastCDC` or NIF
+calls. Elixir operators can mirror the profiles by passing the listed
+`min_size`, `avg_size`, and `max_size` values to `Chunker.chunk_data/4` and the
+matching compressor level to `Chunker.compress_zstd/3` or `Chunker.compress_xz/3`.
+
 ### As Rust Library
 
 ```rust

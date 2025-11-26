@@ -1,6 +1,69 @@
 use fastcdc::v2020::FastCDC;
 use sha2::{Digest, Sha256};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressorPreset {
+    Zstd { level: i32 },
+    Xz { level: u32 },
+}
+
+impl CompressorPreset {
+    pub const fn codec(&self) -> &'static str {
+        match self {
+            Self::Zstd { .. } => "zstd",
+            Self::Xz { .. } => "xz",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PolicyProfile {
+    pub name: &'static str,
+    pub min_size: usize,
+    pub avg_size: usize,
+    pub max_size: usize,
+    pub compressor: CompressorPreset,
+}
+
+impl PolicyProfile {
+    /// General-purpose profile balanced for throughput and deduplication.
+    pub const fn balanced() -> Self {
+        Self {
+            name: "balanced",
+            min_size: 16_384,
+            avg_size: 65_536,
+            max_size: 262_144,
+            compressor: CompressorPreset::Zstd { level: 3 },
+        }
+    }
+
+    /// Favor higher throughput with fewer, larger chunks and faster compression.
+    pub const fn throughput_optimized() -> Self {
+        Self {
+            name: "throughput_optimized",
+            min_size: 32_768,
+            avg_size: 131_072,
+            max_size: 524_288,
+            compressor: CompressorPreset::Zstd { level: 1 },
+        }
+    }
+
+    /// Favor deduplication density and maximum compression ratio.
+    pub const fn archival() -> Self {
+        Self {
+            name: "archival",
+            min_size: 8_192,
+            avg_size: 32_768,
+            max_size: 131_072,
+            compressor: CompressorPreset::Xz { level: 6 },
+        }
+    }
+
+    pub const fn chunking_bounds(&self) -> (usize, usize, usize) {
+        (self.min_size, self.avg_size, self.max_size)
+    }
+}
+
 #[derive(Debug, thiserror::Error, Clone, Copy)]
 pub enum ChunkingError {
     #[error(
@@ -65,4 +128,35 @@ pub fn chunk_data(
     }
 
     Ok(chunks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CompressorPreset, PolicyProfile};
+
+    #[test]
+    fn policy_profile_balanced_matches_defaults() {
+        let profile = PolicyProfile::balanced();
+        assert_eq!(profile.name, "balanced");
+        assert_eq!(profile.chunking_bounds(), (16_384, 65_536, 262_144));
+        assert_eq!(profile.compressor, CompressorPreset::Zstd { level: 3 });
+        assert_eq!(profile.compressor.codec(), "zstd");
+    }
+
+    #[test]
+    fn policy_profile_throughput_prefers_larger_chunks() {
+        let profile = PolicyProfile::throughput_optimized();
+        assert_eq!(profile.name, "throughput_optimized");
+        assert_eq!(profile.chunking_bounds(), (32_768, 131_072, 524_288));
+        assert_eq!(profile.compressor, CompressorPreset::Zstd { level: 1 });
+    }
+
+    #[test]
+    fn policy_profile_archival_prefers_density() {
+        let profile = PolicyProfile::archival();
+        assert_eq!(profile.name, "archival");
+        assert_eq!(profile.chunking_bounds(), (8_192, 32_768, 131_072));
+        assert_eq!(profile.compressor, CompressorPreset::Xz { level: 6 });
+        assert_eq!(profile.compressor.codec(), "xz");
+    }
 }
