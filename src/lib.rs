@@ -13,6 +13,7 @@
 pub mod chunking;
 pub mod compression;
 pub mod hashing;
+pub mod manifest;
 pub mod signing;
 
 #[cfg(feature = "nif")]

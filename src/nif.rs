@@ -4,7 +4,7 @@
 use rustler::types::binary::OwnedBinary;
 use rustler::{Binary, Env, NifResult};
 
-use crate::{chunking, compression, hashing, signing};
+use crate::{chunking, compression, hashing, manifest, signing};
 
 mod atoms {
     rustler::atoms! {
@@ -22,6 +22,7 @@ mod atoms {
         xz_compression_failed,
         xz_decompression_failed,
         chunk_bounds_invalid,
+        manifest_encoding_failed,
     }
 }
 
@@ -39,7 +40,8 @@ rustler::init!(
         decompress_zstd,
         compress_xz,
         decompress_xz,
-        chunk_data
+        chunk_data,
+        chunk_manifest
     ]
 );
 fn binary_from_vec<'a>(env: Env<'a>, data: Vec<u8>) -> NifResult<Binary<'a>> {
@@ -201,4 +203,54 @@ fn chunk_data<'a>(
             atoms::chunk_bounds_invalid(),
         ))),
     }
+}
+
+#[rustler::nif]
+fn chunk_manifest<'a>(
+    env: Env<'a>,
+    data: Binary<'a>,
+    min_size: Option<u32>,
+    avg_size: Option<u32>,
+    max_size: Option<u32>,
+) -> NifResult<(Vec<(String, u32, u32)>, Binary<'a>, Binary<'a>)> {
+    let config = chunking::CdcConfig {
+        min_size: min_size.unwrap_or(16_384),
+        avg_size: avg_size.unwrap_or(65_536),
+        max_size: max_size.unwrap_or(262_144),
+    };
+
+    let manifest = chunking::chunk_data_with_manifest(
+        data.as_slice(),
+        config,
+        manifest::CompressionSettings::default(),
+    )
+    .map_err(|err| match err {
+        chunking::ChunkingError::Bounds { .. } => {
+            rustler::error::Error::Term(Box::new(atoms::chunk_bounds_invalid()))
+        }
+    })?;
+
+    let chunks = manifest
+        .chunks
+        .iter()
+        .map(|chunk| {
+            #[allow(clippy::cast_possible_truncation)]
+            let offset_u32 = chunk.offset as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            let length_u32 = chunk.length as u32;
+            (chunk.hash.clone(), offset_u32, length_u32)
+        })
+        .collect();
+
+    let json_bytes = manifest
+        .to_canonical_json_bytes()
+        .map_err(|_| rustler::error::Error::Term(Box::new(atoms::manifest_encoding_failed())))?;
+    let cbor_bytes = manifest
+        .to_canonical_cbor_bytes()
+        .map_err(|_| rustler::error::Error::Term(Box::new(atoms::manifest_encoding_failed())))?;
+
+    let json_bin = binary_from_vec(env, json_bytes)?;
+    let cbor_bin = binary_from_vec(env, cbor_bytes)?;
+
+    Ok((chunks, json_bin, cbor_bin))
 }
