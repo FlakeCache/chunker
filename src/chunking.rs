@@ -1,5 +1,6 @@
 use fastcdc::v2020::FastCDC;
-use sha2::{Digest, Sha256};
+
+use crate::hashing::{self, HashAlgorithm};
 
 #[derive(Debug, thiserror::Error, Clone, Copy)]
 pub enum ChunkingError {
@@ -39,6 +40,17 @@ pub fn chunk_data(
     avg_size: Option<usize>,
     max_size: Option<usize>,
 ) -> Result<Vec<(String, usize, usize)>, ChunkingError> {
+    chunk_data_with_hasher(data, min_size, avg_size, max_size, HashAlgorithm::default())
+}
+
+/// Chunk data using `FastCDC` (Content-Defined Chunking) with a specified hashing algorithm.
+pub fn chunk_data_with_hasher(
+    data: &[u8],
+    min_size: Option<usize>,
+    avg_size: Option<usize>,
+    max_size: Option<usize>,
+    hash_algorithm: HashAlgorithm,
+) -> Result<Vec<(String, usize, usize)>, ChunkingError> {
     // These values are well below u32::MAX, so truncation is safe
     #[allow(clippy::cast_possible_truncation)]
     let min = min_size.unwrap_or(16_384) as u32; // 16 KB
@@ -55,11 +67,10 @@ pub fn chunk_data(
         // Validate bounds before slice access (defense-in-depth)
         validate_slice_bounds(data.len(), chunk.offset, chunk.length)?;
 
-        // Compute SHA256 hash of chunk
-        let mut hasher = Sha256::new();
-        hasher.update(&data[chunk.offset..chunk.offset + chunk.length]);
-        let hash = hasher.finalize();
-        let hash_hex = hex::encode(hash);
+        let hash_hex = hashing::hash_bytes(
+            &data[chunk.offset..chunk.offset + chunk.length],
+            hash_algorithm,
+        );
 
         chunks.push((hash_hex, chunk.offset, chunk.length));
     }

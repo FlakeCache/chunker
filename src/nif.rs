@@ -39,7 +39,8 @@ rustler::init!(
         decompress_zstd,
         compress_xz,
         decompress_xz,
-        chunk_data
+        chunk_data,
+        chunk_data_with_hash
     ]
 );
 fn binary_from_vec<'a>(env: Env<'a>, data: Vec<u8>) -> NifResult<Binary<'a>> {
@@ -187,6 +188,42 @@ fn chunk_data<'a>(
     let max = max_size.unwrap_or(262_144) as usize;
 
     match chunking::chunk_data(data.as_slice(), Some(min), Some(avg), Some(max)) {
+        Ok(chunks) => Ok(chunks
+            .into_iter()
+            .map(|(hash, offset, length)| {
+                #[allow(clippy::cast_possible_truncation)]
+                let offset_u32 = offset as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let length_u32 = length as u32;
+                (hash, offset_u32, length_u32)
+            })
+            .collect()),
+        Err(chunking::ChunkingError::Bounds { .. }) => Err(rustler::error::Error::Term(Box::new(
+            atoms::chunk_bounds_invalid(),
+        ))),
+    }
+}
+
+#[rustler::nif]
+fn chunk_data_with_hash<'a>(
+    _env: Env<'a>,
+    data: Binary<'a>,
+    min_size: Option<u32>,
+    avg_size: Option<u32>,
+    max_size: Option<u32>,
+    hash_algorithm: hashing::HashAlgorithm,
+) -> NifResult<Vec<(String, u32, u32)>> {
+    let min = min_size.unwrap_or(16_384) as usize;
+    let avg = avg_size.unwrap_or(65_536) as usize;
+    let max = max_size.unwrap_or(262_144) as usize;
+
+    match chunking::chunk_data_with_hasher(
+        data.as_slice(),
+        Some(min),
+        Some(avg),
+        Some(max),
+        hash_algorithm,
+    ) {
         Ok(chunks) => Ok(chunks
             .into_iter()
             .map(|(hash, offset, length)| {

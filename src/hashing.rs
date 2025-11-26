@@ -1,5 +1,19 @@
 use sha2::{Digest, Sha256};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "nif", derive(rustler::NifUnitEnum))]
+pub enum HashAlgorithm {
+    Sha256,
+    #[cfg(feature = "blake3")]
+    Blake3,
+}
+
+impl Default for HashAlgorithm {
+    fn default() -> Self {
+        Self::Sha256
+    }
+}
+
 #[derive(Debug, thiserror::Error, Clone, Copy)]
 pub enum HashingError {
     #[error("invalid_base32_character")]
@@ -16,6 +30,43 @@ pub fn sha256_hash(data: &[u8]) -> String {
     hasher.update(data);
     let result = hasher.finalize();
     hex::encode(result)
+}
+
+/// Compute BLAKE3 hash of data
+/// Returns: hex string
+#[cfg(feature = "blake3")]
+pub fn blake3_hash(data: &[u8]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(data);
+    let result = hasher.finalize();
+    result.to_hex().to_string()
+}
+
+/// Compute hash of data using the specified algorithm, defaulting to SHA-256.
+pub fn hash_bytes(data: &[u8], algorithm: HashAlgorithm) -> String {
+    match algorithm {
+        HashAlgorithm::Sha256 => sha256_hash(data),
+        #[cfg(feature = "blake3")]
+        HashAlgorithm::Blake3 => blake3_hash(data),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hash_bytes_defaults() {
+        let sha_result = sha256_hash(b"hash me");
+        assert_eq!(hash_bytes(b"hash me", HashAlgorithm::Sha256), sha_result);
+    }
+
+    #[cfg(feature = "blake3")]
+    #[test]
+    fn hash_bytes_blake3() {
+        let blake3_result = blake3_hash(b"hash me");
+        assert_eq!(hash_bytes(b"hash me", HashAlgorithm::Blake3), blake3_result);
+    }
 }
 
 /// Encode data to Nix's base32 format
