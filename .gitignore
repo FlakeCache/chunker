@@ -1,0 +1,41 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# Nix development
+.envrc
+direnv.allow
+
+# Cargo caches
+.cargo/
+*.cargo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Coverage
+/cover/
+tarpaulin-report.html
+
+# Test outputs
+test-output/
+test-results/
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Dependencies
+.nix-cargo/
+.nix-mix/

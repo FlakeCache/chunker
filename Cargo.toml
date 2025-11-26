@@ -1,0 +1,98 @@
+[package]
+name = "chunker"
+version = "1.0.0"
+authors = ["FlakeCache Team"]
+edition = "2021"
+description = "High-performance content-defined chunking for Nix NARs (Rustler NIF + standalone library)"
+license = "Apache-2.0"
+repository = "https://github.com/FlakeCache/chunker"
+readme = "README.md"
+categories = ["algorithms", "compression", "cryptography"]
+keywords = ["nix", "nar", "hash", "sign", "compress", "chunk", "fastcdc", "rustler", "nif"]
+
+[package.metadata.cargo-machete]
+ignored = ["bzip2", "serde", "serde_json"]
+
+[lib]
+name = "chunker"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[[lib]]
+name = "chunker_nif"
+path = "nif/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.37.0"
+
+# Cryptography
+ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+sha2 = "0.10.9"
+
+# Compression
+zstd = "0.13.3"
+xz2 = "0.1.7"
+bzip2 = "0.6.1"
+
+# Content-defined chunking
+fastcdc = "3.2.1"
+
+# Serialization
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+
+# Random number generation for key generation
+# Using 0.8 for compatibility with ed25519-dalek 2.2 (requires rand_core 0.6)
+rand = "0.8"
+
+# Hex encoding
+hex = "0.4.3"
+
+# Base64 encoding with strict padding validation
+base64 = "0.22.1"
+
+# =============================================================================
+# Enterprise-Grade Clippy Lints Configuration
+# =============================================================================
+# Strict, pedantic, and nursery lints enabled for maximum code quality
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "allow"  # Allow missing docs (rustler::init! macro doesn't support docs)
+missing_debug_implementations = "warn"
+missing_copy_implementations = "warn"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+unused_import_braces = "deny"
+unused_qualifications = "deny"
+unused_attributes = "allow"  # Allow unused attributes (rustler::init! macro)
+unused_results = "warn"
+unused_must_use = "warn"
+
+[lints.clippy]
+# Enable all pedantic and nursery lints (with lower priority for allow overrides)
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# Deny critical issues (higher priority)
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "warn"
+unimplemented = "warn"
+unreachable = "warn"
+
+# Performance (higher priority than groups)
+all = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+
+# Allow specific cases (NIF requirements)
+multiple_crate_versions = "allow"
+module_name_repetitions = "allow"
+unnecessary_wraps = "allow"  # NIFs require Result wrapper
+cast_possible_truncation = "allow"  # With safety comments

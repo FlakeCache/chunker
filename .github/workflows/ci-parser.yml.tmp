@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+# Cancel in-progress runs when a new workflow on the same PR is triggered
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: Singularity-ng/github-workflows/.github/workflows/rust-nix-ci.yml@v1
+    with:
+      enable-coverage: true
+      enable-benchmarks: false
+      rust-version: stable
+      os-matrix: '["ubuntu-latest"]'  # Skip macOS for now due to apple_sdk issues
