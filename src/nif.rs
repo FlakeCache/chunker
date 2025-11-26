@@ -9,7 +9,6 @@ use crate::{chunking, compression, hashing, signing};
 mod atoms {
     rustler::atoms! {
         ok,
-        key_generation_failed,
         signing_failed,
         invalid_signature,
         invalid_secret_key,
