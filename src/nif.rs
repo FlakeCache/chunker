@@ -4,6 +4,7 @@
 use rustler::types::binary::OwnedBinary;
 use rustler::{Binary, Env, NifResult};
 
+use crate::chunking::{ChunkingConfig, ChunkingStrategySelector, FastCdcConfig, TwoTierConfig};
 use crate::{chunking, compression, hashing, signing};
 
 mod atoms {
@@ -181,12 +182,43 @@ fn chunk_data<'a>(
     min_size: Option<u32>,
     avg_size: Option<u32>,
     max_size: Option<u32>,
+    strategy: Option<String>,
 ) -> NifResult<Vec<(String, u32, u32)>> {
     let min = min_size.unwrap_or(16_384) as usize;
     let avg = avg_size.unwrap_or(65_536) as usize;
     let max = max_size.unwrap_or(262_144) as usize;
 
-    match chunking::chunk_data(data.as_slice(), Some(min), Some(avg), Some(max)) {
+    let fastcdc = ChunkingStrategySelector::FastCdc(FastCdcConfig {
+        min_size: min,
+        avg_size: avg,
+        max_size: max,
+    });
+
+    #[cfg(feature = "quickcdc")]
+    let quickcdc = ChunkingStrategySelector::QuickCdc(chunking::QuickCdcConfig {
+        min_size: min,
+        avg_size: avg,
+        max_size: max,
+        mask: 0,
+        window_size: 64,
+        table: &gearhash::DEFAULT_TABLE,
+    });
+
+    #[cfg(not(feature = "quickcdc"))]
+    let quickcdc = fastcdc.clone();
+
+    let selected_strategy = match strategy.as_deref() {
+        Some("two_tier") => ChunkingStrategySelector::TwoTier(TwoTierConfig {
+            coarse: Box::new(quickcdc.clone()),
+            fine: Box::new(fastcdc.clone()),
+        }),
+        Some("quickcdc") => quickcdc,
+        _ => fastcdc,
+    };
+
+    let config = ChunkingConfig::from_strategy(selected_strategy);
+
+    match chunking::chunk_data(data.as_slice(), config) {
         Ok(chunks) => Ok(chunks
             .into_iter()
             .map(|(hash, offset, length)| {
