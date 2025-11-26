@@ -22,7 +22,6 @@ mod atoms {
         zstd_decompression_failed,
         xz_compression_failed,
         xz_decompression_failed,
-        chunking_failed,
         chunk_bounds_invalid,
     }
 }
