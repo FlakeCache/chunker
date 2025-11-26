@@ -3,6 +3,7 @@
 
 use rustler::types::binary::OwnedBinary;
 use rustler::{Binary, Env, NifResult};
+use std::io::Cursor;
 
 use crate::{chunking, compression, hashing, signing};
 
@@ -22,6 +23,7 @@ mod atoms {
         xz_compression_failed,
         xz_decompression_failed,
         chunk_bounds_invalid,
+        chunk_stream_failed,
     }
 }
 
@@ -39,7 +41,8 @@ rustler::init!(
         decompress_zstd,
         compress_xz,
         decompress_xz,
-        chunk_data
+        chunk_data,
+        chunk_stream
     ]
 );
 fn binary_from_vec<'a>(env: Env<'a>, data: Vec<u8>) -> NifResult<Binary<'a>> {
@@ -199,6 +202,43 @@ fn chunk_data<'a>(
             .collect()),
         Err(chunking::ChunkingError::Bounds { .. }) => Err(rustler::error::Error::Term(Box::new(
             atoms::chunk_bounds_invalid(),
+        ))),
+        Err(_) => Err(rustler::error::Error::Term(Box::new(
+            atoms::chunk_stream_failed(),
+        ))),
+    }
+}
+
+#[rustler::nif]
+fn chunk_stream<'a>(
+    _env: Env<'a>,
+    data: Binary<'a>,
+    min_size: Option<u32>,
+    avg_size: Option<u32>,
+    max_size: Option<u32>,
+) -> NifResult<Vec<(String, u32, u32)>> {
+    let min = min_size.unwrap_or(16_384) as usize;
+    let avg = avg_size.unwrap_or(65_536) as usize;
+    let max = max_size.unwrap_or(262_144) as usize;
+
+    let cursor = Cursor::new(data.as_slice());
+
+    match chunking::chunk_stream(cursor, Some(min), Some(avg), Some(max)) {
+        Ok(chunks) => Ok(chunks
+            .into_iter()
+            .map(|(hash, offset, length)| {
+                #[allow(clippy::cast_possible_truncation)]
+                let offset_u32 = offset as u32;
+                #[allow(clippy::cast_possible_truncation)]
+                let length_u32 = length as u32;
+                (hash, offset_u32, length_u32)
+            })
+            .collect()),
+        Err(chunking::ChunkingError::Bounds { .. }) => Err(rustler::error::Error::Term(Box::new(
+            atoms::chunk_bounds_invalid(),
+        ))),
+        Err(_) => Err(rustler::error::Error::Term(Box::new(
+            atoms::chunk_stream_failed(),
         ))),
     }
 }

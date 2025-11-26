@@ -40,6 +40,7 @@ bzip2 = "0.6.1"
 
 # Content-defined chunking
 fastcdc = "3.2.1"
+crossbeam-channel = "0.5"
 
 # Serialization
 serde = { version = "1.0.228", features = ["derive"] }
