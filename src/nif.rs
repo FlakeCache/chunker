@@ -177,13 +177,12 @@ fn decompress_xz<'a>(env: Env<'a>, data: Binary<'a>) -> NifResult<Binary<'a>> {
 
 #[rustler::nif]
 fn chunk_data<'a>(
-    env: Env<'a>,
+    _env: Env<'a>,
     data: Binary<'a>,
     min_size: Option<u32>,
     avg_size: Option<u32>,
     max_size: Option<u32>,
 ) -> NifResult<Vec<(String, u32, u32)>> {
-    let _ = env;
     let min = min_size.unwrap_or(16_384) as usize;
     let avg = avg_size.unwrap_or(65_536) as usize;
     let max = max_size.unwrap_or(262_144) as usize;
