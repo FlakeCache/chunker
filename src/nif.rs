@@ -83,9 +83,6 @@ fn verify_signature<'a>(
         Err(signing::SigningError::DecodeError) => {
             Err(rustler::error::Error::Term(Box::new(atoms::decode_error())))
         }
-        Err(signing::SigningError::InvalidSecretKey) => Err(rustler::error::Error::Term(Box::new(
-            atoms::invalid_secret_key(),
-        ))),
         Err(signing::SigningError::VerificationFailed) => Err(rustler::error::Error::Term(
             Box::new(atoms::invalid_signature()),
         )),
