@@ -21,6 +21,7 @@ default = []
 # build focused on the pure Rust library. Enable with `--features nif` when
 # building the NIF cdylib for Elixir.
 nif = ["rustler"]
+async-stream = ["futures"]
 
 [lib]
 name = "chunker"
@@ -46,6 +47,9 @@ fastcdc = "3.2.1"
 # Serialization
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+
+# Async compatibility for streaming chunkers
+futures = { version = "0.3", optional = true }
 
 # Random number generation for key generation
 

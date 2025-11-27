@@ -40,11 +40,21 @@ hash = Chunker.sha256_hash(data)
 
 ```rust
 use chunker::fastcdc::FastCDC;
+use chunker::chunking::ChunkStream;
+use std::io::BufReader;
 
 let data = b"data to chunk";
 let chunker = FastCDC::new(data, 16_384, 65_536, 262_144);
 for chunk in chunker {
     println!("Chunk at {}: {} bytes", chunk.offset, chunk.length);
+}
+
+// Stream large inputs without holding everything in memory
+let file = BufReader::new(std::fs::File::open("/path/to/large.nar")?);
+let stream = ChunkStream::new(file, None, None, None);
+for chunk in stream {
+    let chunk = chunk?;
+    println!("Streaming chunk at {}: {} bytes (hash: {})", chunk.offset, chunk.length, chunk.hash);
 }
 ```
 

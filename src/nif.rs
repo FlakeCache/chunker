@@ -5,6 +5,7 @@ use rustler::types::binary::OwnedBinary;
 use rustler::{Binary, Env, NifResult};
 
 use crate::{chunking, compression, hashing, signing};
+use std::io::Cursor;
 
 mod atoms {
     rustler::atoms! {
@@ -40,7 +41,8 @@ rustler::init!(
         decompress_zstd,
         compress_xz,
         decompress_xz,
-        chunk_data
+        chunk_data,
+        chunk_data_streaming
     ]
 );
 fn binary_from_vec<'a>(env: Env<'a>, data: Vec<u8>) -> NifResult<Binary<'a>> {
@@ -212,4 +214,41 @@ fn chunk_data<'a>(
             atoms::io_error(),
         ))),
     }
+}
+
+#[rustler::nif]
+fn chunk_data_streaming<'a>(
+    _env: Env<'a>,
+    data: Binary<'a>,
+    min_size: Option<u32>,
+    avg_size: Option<u32>,
+    max_size: Option<u32>,
+) -> NifResult<Vec<(String, u32, u32)>> {
+    let min = min_size.unwrap_or(16_384) as usize;
+    let avg = avg_size.unwrap_or(65_536) as usize;
+    let max = max_size.unwrap_or(262_144) as usize;
+
+    let cursor = Cursor::new(data.as_slice());
+    let stream = chunking::ChunkStream::new(cursor, Some(min), Some(avg), Some(max));
+
+    let mut chunks = Vec::new();
+    for chunk in stream {
+        let chunk = chunk.map_err(|err| match err {
+            chunking::ChunkingError::Bounds { .. } => {
+                rustler::error::Error::Term(Box::new(atoms::chunk_bounds_invalid()))
+            }
+            chunking::ChunkingError::Io(_) => {
+                rustler::error::Error::Term(Box::new(atoms::chunk_bounds_invalid()))
+            }
+        })?;
+
+        #[allow(clippy::cast_possible_truncation)]
+        let offset_u32 = chunk.offset as u32;
+        #[allow(clippy::cast_possible_truncation)]
+        let length_u32 = chunk.length as u32;
+
+        chunks.push((chunk.hash, offset_u32, length_u32));
+    }
+
+    Ok(chunks)
 }

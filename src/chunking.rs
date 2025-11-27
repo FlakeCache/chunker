@@ -1,7 +1,12 @@
-use fastcdc::v2020::FastCDC;
+use fastcdc::v2020::{FastCDC, StreamCDC};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::fmt;
 use std::io::Read;
+
+#[cfg(feature = "async-stream")]
+use futures::io::AsyncRead;
+#[cfg(feature = "async-stream")]
+use futures::io::AsyncReadExt;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ChunkingError {
@@ -15,6 +20,38 @@ pub enum ChunkingError {
     },
     #[error("io_error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// Metadata for a single chunk emitted by streaming chunkers.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ChunkMetadata {
+    /// Hex-encoded SHA-256 hash of the chunk payload.
+    pub hash: String,
+    /// Starting byte offset of the chunk relative to the reader.
+    pub offset: u64,
+    /// Chunk length in bytes.
+    pub length: usize,
+}
+
+/// Configurable bounds for FastCDC chunking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ChunkingOptions {
+    /// Minimum chunk size in bytes.
+    pub min_size: usize,
+    /// Average (target) chunk size in bytes.
+    pub avg_size: usize,
+    /// Maximum chunk size in bytes.
+    pub max_size: usize,
+}
+
+impl ChunkingOptions {
+    fn resolve(min_size: Option<usize>, avg_size: Option<usize>, max_size: Option<usize>) -> Self {
+        Self {
+            min_size: min_size.unwrap_or(16_384),
+            avg_size: avg_size.unwrap_or(65_536),
+            max_size: max_size.unwrap_or(262_144),
+        }
+    }
 }
 
 /// Validate slice bounds to prevent out-of-bounds access
@@ -43,13 +80,15 @@ pub fn chunk_data(
     avg_size: Option<usize>,
     max_size: Option<usize>,
 ) -> Result<Vec<(String, usize, usize)>, ChunkingError> {
+    let options = ChunkingOptions::resolve(min_size, avg_size, max_size);
+
     // These values are well below u32::MAX, so truncation is safe
     #[allow(clippy::cast_possible_truncation)]
-    let min = min_size.unwrap_or(16_384) as u32; // 16 KB
+    let min = options.min_size as u32; // 16 KB
     #[allow(clippy::cast_possible_truncation)]
-    let avg = avg_size.unwrap_or(65_536) as u32; // 64 KB
+    let avg = options.avg_size as u32; // 64 KB
     #[allow(clippy::cast_possible_truncation)]
-    let max = max_size.unwrap_or(262_144) as u32; // 256 KB
+    let max = options.max_size as u32; // 256 KB
 
     let chunker = FastCDC::new(data, min, avg, max);
 
@@ -71,203 +110,140 @@ pub fn chunk_data(
     Ok(chunks)
 }
 
-/// Stream content-defined chunks from any reader while maintaining FastCDC state
-/// across reads. Chunks are hashed via a bounded worker channel to avoid
-/// unbounded buffering while preserving output order.
-pub fn chunk_stream<R: Read>(
-    mut reader: R,
+/// A streaming chunk reader that yields chunk metadata and hashes without buffering
+/// the entire source in memory.
+pub struct ChunkStream<R: Read> {
+    inner: StreamCDC<R>,
+}
+
+impl<R: Read> fmt::Debug for ChunkStream<R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChunkStream")
+            .field("offset", &"streaming")
+            .finish()
+    }
+}
+
+impl<R: Read> ChunkStream<R> {
+    /// Create a streaming chunker around any [`std::io::Read`] implementation.
+    /// Uses FastCDC with optional min/avg/max overrides.
+    pub fn new(reader: R, min_size: Option<usize>, avg_size: Option<usize>, max_size: Option<usize>) -> Self {
+        let options = ChunkingOptions::resolve(min_size, avg_size, max_size);
+
+        #[allow(clippy::cast_possible_truncation)]
+        let min = options.min_size as u32;
+        #[allow(clippy::cast_possible_truncation)]
+        let avg = options.avg_size as u32;
+        #[allow(clippy::cast_possible_truncation)]
+        let max = options.max_size as u32;
+
+        let inner = StreamCDC::new(reader, min, avg, max);
+        Self { inner }
+    }
+}
+
+impl<R: Read> Iterator for ChunkStream<R> {
+    type Item = Result<ChunkMetadata, ChunkingError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let chunk_result = self.inner.next()?;
+        match chunk_result {
+            Ok(chunk) => {
+                let mut hasher = Sha256::new();
+                hasher.update(&chunk.data);
+                let hash_hex = hex::encode(hasher.finalize());
+
+                Some(Ok(ChunkMetadata {
+                    hash: hash_hex,
+                    offset: chunk.offset,
+                    length: chunk.length,
+                }))
+            }
+            Err(err) => Some(Err(ChunkingError::Io(err.into()))),
+        }
+    }
+}
+
+/// Adapter to allow [`ChunkStream`] usage with asynchronous readers.
+#[cfg(feature = "async-stream")]
+pub struct AsyncReadAdapter<R: AsyncRead + Unpin> {
+    inner: R,
+}
+
+#[cfg(feature = "async-stream")]
+impl<R: AsyncRead + Unpin> fmt::Debug for AsyncReadAdapter<R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AsyncReadAdapter").finish()
+    }
+}
+
+#[cfg(feature = "async-stream")]
+impl<R: AsyncRead + Unpin> Read for AsyncReadAdapter<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        futures::executor::block_on(self.inner.read(buf))
+    }
+}
+
+/// A convenience alias that exposes streaming chunking for any [`AsyncRead`]
+/// implementor under the `async-stream` feature flag.
+#[cfg(feature = "async-stream")]
+pub type AsyncChunkStream<R> = ChunkStream<AsyncReadAdapter<R>>;
+
+/// Construct a [`ChunkStream`] around an asynchronous reader by blocking on
+/// individual reads. This keeps the same low-memory chunking behavior while
+/// allowing consumers in async contexts to feed data into FastCDC.
+#[cfg(feature = "async-stream")]
+pub fn chunk_stream_async<R: AsyncRead + Unpin>(
+    reader: R,
     min_size: Option<usize>,
     avg_size: Option<usize>,
     max_size: Option<usize>,
-) -> Result<Vec<(String, usize, usize)>, ChunkingError> {
-    #[allow(clippy::cast_possible_truncation)]
-    let min = min_size.unwrap_or(16_384) as u32;
-    #[allow(clippy::cast_possible_truncation)]
-    let avg = avg_size.unwrap_or(65_536) as u32;
-    #[allow(clippy::cast_possible_truncation)]
-    let max = max_size.unwrap_or(262_144) as u32;
-
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut chunks: Vec<(String, usize, usize)> = Vec::new();
-    let mut offset_base: usize = 0;
-    let mut next_index: usize = 0;
-    let mut pending_results: BTreeMap<usize, (String, usize, usize)> = BTreeMap::new();
-
-    let (job_tx, result_rx, worker_handle) = crate::hashing::spawn_hashing_worker(4);
-    let mut submitted = 0usize;
-
-    let mut read_buf = [0u8; 65_536];
-    loop {
-        let bytes_read = reader.read(&mut read_buf)?;
-        if bytes_read == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&read_buf[..bytes_read]);
-
-        submit_ready_chunks(
-            false,
-            min,
-            avg,
-            max,
-            &mut buffer,
-            &mut offset_base,
-            &mut next_index,
-            &mut submitted,
-            &job_tx,
-        )?;
-
-        drain_ready_results(
-            &result_rx,
-            &mut pending_results,
-            &mut chunks,
-            submitted,
-            false,
-        );
-    }
-
-    submit_ready_chunks(
-        true,
-        min,
-        avg,
-        max,
-        &mut buffer,
-        &mut offset_base,
-        &mut next_index,
-        &mut submitted,
-        &job_tx,
-    )?;
-    drop(job_tx);
-
-    while chunks.len() < submitted {
-        drain_ready_results(
-            &result_rx,
-            &mut pending_results,
-            &mut chunks,
-            submitted,
-            true,
-        );
-    }
-
-    // Wait for worker thread to finish and detect panics
-    match worker_handle.join() {
-        Ok(()) => {
-            // Verify we received all expected results
-            if chunks.len() != submitted {
-                return Err(ChunkingError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("worker incomplete: expected {} results, got {}", submitted, chunks.len()),
-                )));
-            }
-            Ok(chunks)
-        }
-        Err(_) => {
-            return Err(ChunkingError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "hashing worker thread panicked",
-            )));
-        }
-    }
-}
-
-fn submit_ready_chunks(
-    finalize: bool,
-    min: u32,
-    avg: u32,
-    max: u32,
-    buffer: &mut Vec<u8>,
-    offset_base: &mut usize,
-    next_index: &mut usize,
-    submitted: &mut usize,
-    job_tx: &std::sync::mpsc::SyncSender<Option<crate::hashing::HashJob>>,
-) -> Result<(), ChunkingError> {
-    let chunker = FastCDC::new(buffer, min, avg, max);
-    let mut produced: Vec<_> = chunker.collect();
-
-    if !finalize && !produced.is_empty() {
-        let _ = produced.pop();
-    }
-
-    let mut drain_up_to = 0usize;
-    for chunk in produced {
-        validate_slice_bounds(buffer.len(), chunk.offset, chunk.length)?;
-        let start = chunk.offset;
-        let end = chunk.offset + chunk.length;
-        let data = buffer[start..end].to_vec();
-        let global_offset = *offset_base + chunk.offset;
-        let job = crate::hashing::HashJob {
-            index: *next_index,
-            offset: global_offset,
-            data,
-        };
-        job_tx
-            .send(Some(job))
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))?;
-        *next_index += 1;
-        *submitted += 1;
-        drain_up_to = end;
-    }
-
-    if drain_up_to > 0 {
-        let _ = buffer.drain(..drain_up_to);
-        *offset_base += drain_up_to;
-    }
-
-    Ok(())
-}
-
-fn drain_ready_results(
-    result_rx: &std::sync::mpsc::Receiver<crate::hashing::HashResult>,
-    pending_results: &mut BTreeMap<usize, (String, usize, usize)>,
-    chunks: &mut Vec<(String, usize, usize)>,
-    submitted: usize,
-    block_if_empty: bool,
-) {
-    if submitted == chunks.len() {
-        return;
-    }
-
-    flush_pending(pending_results, chunks);
-
-    if submitted == chunks.len() {
-        return;
-    }
-
-    if block_if_empty && pending_results.is_empty() {
-        if let Ok(result) = result_rx.recv() {
-            let _ =
-                pending_results.insert(result.index, (result.digest, result.offset, result.length));
-            flush_pending(pending_results, chunks);
-        } else {
-            return;
-        }
-    }
-
-    while let Ok(result) = result_rx.try_recv() {
-        let _ = pending_results.insert(result.index, (result.digest, result.offset, result.length));
-        flush_pending(pending_results, chunks);
-        if chunks.len() == submitted {
-            break;
-        }
-    }
-}
-
-fn flush_pending(
-    pending_results: &mut BTreeMap<usize, (String, usize, usize)>,
-    chunks: &mut Vec<(String, usize, usize)>,
-) {
-    while let Some((index, (digest, offset, length))) = pending_results.pop_first() {
-        if index == chunks.len() {
-            chunks.push((digest, offset, length));
-        } else {
-            let _ = pending_results.insert(index, (digest, offset, length));
-            break;
-        }
-    }
+) -> AsyncChunkStream<R> {
+    ChunkStream::new(AsyncReadAdapter { inner: reader }, min_size, avg_size, max_size)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufReader, Cursor};
+
+    #[test]
+    fn streaming_reader_emits_full_length() -> Result<(), ChunkingError> {
+        let size = 3 * 1024 * 1024 + 321; // Just over 3 MiB
+        let data = vec![42_u8; size];
+        let cursor = Cursor::new(&data);
+        let reader = BufReader::new(cursor);
+
+        let mut stream = ChunkStream::new(reader, None, Some(32 * 1024), Some(64 * 1024));
+        let mut total = 0_usize;
+        let mut count = 0_usize;
+
+        while let Some(chunk) = stream.next() {
+            let chunk = chunk?;
+            total += chunk.length;
+            count += 1;
+        }
+
+        assert_eq!(total, size);
+        assert!(count > 1); // Ensure multiple chunks were produced for large data
+
+        Ok(())
+    }
+
+    #[test]
+    fn chunking_options_defaults_match_chunk_data() -> Result<(), ChunkingError> {
+        let payload = b"streaming chunker parity test".repeat(2048);
+        let mut streaming = ChunkStream::new(Cursor::new(&payload), None, None, None);
+        let collected: Vec<_> = streaming
+            .by_ref()
+            .map(|res| res.map(|chunk| (chunk.hash, chunk.offset as usize, chunk.length)))
+            .collect::<Result<_, _>>()?;
+
+        let eager = chunk_data(&payload, None, None, None)?;
+        assert_eq!(collected, eager);
+
+        Ok(())
+    }
 
     #[test]
     fn test_chunk_data_basic() -> Result<(), ChunkingError> {
