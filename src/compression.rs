@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use tracing::{debug, instrument, warn};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CompressionError {
@@ -18,17 +19,20 @@ const MAX_DECOMPRESSED_SIZE: u64 = 10 * 1024 * 1024 * 1024;
 
 /// Compress data using `zstd`
 /// Args: data (binary), `level` (optional, default 3)
+#[instrument(skip(data), fields(data_len = data.len(), level = ?level))]
 pub fn compress_zstd(data: &[u8], level: Option<i32>) -> Result<Vec<u8>, CompressionError> {
     let compression_level = level.unwrap_or(3);
 
     let compressed = zstd::encode_all(data, compression_level)
         .map_err(|e| CompressionError::Compression(e.to_string()))?;
 
+    debug!(compressed_len = compressed.len(), "zstd_compression_complete");
     Ok(compressed)
 }
 
 /// Decompress `zstd` data
 /// Protected against decompression bombs with `MAX_DECOMPRESSED_SIZE` limit
+#[instrument(skip(data), fields(data_len = data.len()))]
 pub fn decompress_zstd(data: &[u8]) -> Result<Vec<u8>, CompressionError> {
     let mut decompressed = Vec::new();
     let decoder = zstd::Decoder::new(data)
@@ -42,9 +46,11 @@ pub fn decompress_zstd(data: &[u8]) -> Result<Vec<u8>, CompressionError> {
 
     // Check if we hit the size limit (indicates potential decompression bomb)
     if decompressed.len() as u64 == MAX_DECOMPRESSED_SIZE {
+        warn!("zstd_decompression_bomb_detected");
         return Err(CompressionError::SizeExceeded);
     }
 
+    debug!(decompressed_len = decompressed.len(), "zstd_decompression_complete");
     Ok(decompressed)
 }
 

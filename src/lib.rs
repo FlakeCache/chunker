@@ -3,10 +3,27 @@
 //! High-performance content-defined chunking (FastCDC) for Nix NARs.
 //!
 //! This library provides:
-//! - FastCDC content-defined chunking algorithm
-//! - Multiple compression codecs (zstd, xz, bzip2)
-//! - Cryptographic signing (Ed25519)
-//! - Hash computation (SHA256, Nix base32)
+//! - **FastCDC** content-defined chunking algorithm
+//! - **Compression** codecs (zstd, xz, bzip2)
+//! - **Cryptographic signing** (Ed25519)
+//! - **Hash computation** (SHA256, Nix base32)
+//!
+//! ## Observability
+//!
+//! This crate uses the [`tracing`](https://docs.rs/tracing) crate for instrumentation.
+//! Applications can enable logging by initializing a subscriber (e.g., `tracing-subscriber`).
+//!
+//! ## Example
+//!
+//! ```rust
+//! use chunker::chunking;
+//! use std::io::Cursor;
+//!
+//! let data = vec![0u8; 1024 * 1024]; // 1MB data
+//! let chunks = chunking::chunk_data(&data, None, None, None).unwrap();
+//!
+//! println!("Generated {} chunks", chunks.len());
+//! ```
 //!
 //! When compiled with the `nif` feature, provides Rustler NIF bindings for Elixir.
 

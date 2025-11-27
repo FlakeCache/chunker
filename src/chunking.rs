@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::io::Read;
+use tracing::{debug, instrument, trace};
 
 #[cfg(feature = "async-stream")]
 use futures::io::AsyncRead;
@@ -46,12 +47,15 @@ pub struct ChunkingOptions {
 }
 
 impl ChunkingOptions {
+    #[instrument(level = "debug", skip(min_size, avg_size, max_size), fields(min = ?min_size, avg = ?avg_size, max = ?max_size))]
     fn resolve(min_size: Option<usize>, avg_size: Option<usize>, max_size: Option<usize>) -> Self {
-        Self {
+        let options = Self {
             min_size: min_size.unwrap_or(16_384),
             avg_size: avg_size.unwrap_or(65_536),
             max_size: max_size.unwrap_or(262_144),
-        }
+        };
+        trace!(?options, "resolved_chunking_options");
+        options
     }
 }
 
@@ -75,6 +79,7 @@ fn validate_slice_bounds(
 /// Chunk data using `FastCDC` (Content-Defined Chunking)
 /// Args: data (binary), `min_size` (optional), `avg_size` (optional), `max_size` (optional)
 /// Returns: list of {`chunk_hash`, `offset`, `length`}
+#[instrument(skip(data), fields(data_len = data.len()))]
 pub fn chunk_data(
     data: &[u8],
     min_size: Option<usize>,
@@ -108,6 +113,7 @@ pub fn chunk_data(
         chunks.push((hash_hex, chunk.offset, chunk.length));
     }
 
+    debug!(chunk_count = chunks.len(), "chunking_complete");
     Ok(chunks)
 }
 
@@ -128,6 +134,7 @@ impl<R: Read> fmt::Debug for ChunkStream<R> {
 impl<R: Read> ChunkStream<R> {
     /// Create a streaming chunker around any [`std::io::Read`] implementation.
     /// Uses FastCDC with optional min/avg/max overrides.
+    #[instrument(skip(reader))]
     pub fn new(reader: R, min_size: Option<usize>, avg_size: Option<usize>, max_size: Option<usize>) -> Self {
         let options = ChunkingOptions::resolve(min_size, avg_size, max_size);
 
@@ -154,13 +161,18 @@ impl<R: Read> Iterator for ChunkStream<R> {
                 hasher.update(&chunk.data);
                 let hash_hex = hex::encode(hasher.finalize());
 
+                trace!(hash = ?hash_hex, offset = chunk.offset, length = chunk.length, "chunk_emitted");
+
                 Some(Ok(ChunkMetadata {
                     hash: hash_hex,
                     offset: chunk.offset,
                     length: chunk.length,
                 }))
             }
-            Err(err) => Some(Err(ChunkingError::Io(err.into()))),
+            Err(err) => {
+                debug!(error = ?err, "chunking_error");
+                Some(Err(ChunkingError::Io(err.into())))
+            },
         }
     }
 }
