@@ -1,4 +1,5 @@
 use fastcdc::v2020::{FastCDC, StreamCDC};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::io::Read;
@@ -23,7 +24,7 @@ pub enum ChunkingError {
 }
 
 /// Metadata for a single chunk emitted by streaming chunkers.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ChunkMetadata {
     /// Hex-encoded SHA-256 hash of the chunk payload.
     pub hash: String,
@@ -34,7 +35,7 @@ pub struct ChunkMetadata {
 }
 
 /// Configurable bounds for FastCDC chunking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ChunkingOptions {
     /// Minimum chunk size in bytes.
     pub min_size: usize,

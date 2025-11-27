@@ -4,7 +4,7 @@
 //!
 //! This library provides:
 //! - FastCDC content-defined chunking algorithm
-//! - Multiple compression codecs (zstd, xz)
+//! - Multiple compression codecs (zstd, xz, bzip2)
 //! - Cryptographic signing (Ed25519)
 //! - Hash computation (SHA256, Nix base32)
 //!
