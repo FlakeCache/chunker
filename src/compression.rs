@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CompressionError {
@@ -82,4 +83,49 @@ pub fn decompress_xz(data: &[u8]) -> Result<Vec<u8>, CompressionError> {
     }
 
     Ok(decompressed)
+}
+
+#[derive(Debug, Clone)]
+pub struct CompressionJob {
+    pub index: usize,
+    pub payload: Vec<u8>,
+    pub level: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompressionResult {
+    pub index: usize,
+    pub compressed: Vec<u8>,
+}
+
+/// Spawn a bounded zstd compression worker that processes payloads in submission
+/// order. The worker terminates when it receives `None`.
+/// Returns (sender, receiver, worker_handle) for panic detection and synchronization.
+pub fn spawn_zstd_worker(
+    bound: usize,
+) -> (
+    SyncSender<Option<CompressionJob>>,
+    Receiver<Result<CompressionResult, CompressionError>>,
+    std::thread::JoinHandle<()>,
+) {
+    let (job_tx, job_rx) = sync_channel(bound);
+    let (result_tx, result_rx) = sync_channel(bound);
+
+    let handle = std::thread::spawn(move || {
+        while let Ok(message) = job_rx.recv() {
+            let Some(job): Option<CompressionJob> = message else {
+                break;
+            };
+            let compressed = compress_zstd(&job.payload, job.level);
+            let result = compressed.map(|payload| CompressionResult {
+                index: job.index,
+                compressed: payload,
+            });
+            if result_tx.send(result).is_err() {
+                break;
+            }
+        }
+    });
+
+    (job_tx, result_rx, handle)
 }

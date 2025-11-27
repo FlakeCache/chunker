@@ -22,6 +22,7 @@ mod atoms {
         xz_compression_failed,
         xz_decompression_failed,
         chunk_bounds_invalid,
+        io_error,
     }
 }
 
@@ -186,7 +187,9 @@ fn chunk_data<'a>(
     let avg = avg_size.unwrap_or(65_536) as usize;
     let max = max_size.unwrap_or(262_144) as usize;
 
-    match chunking::chunk_data(data.as_slice(), Some(min), Some(avg), Some(max)) {
+    let cursor = std::io::Cursor::new(data.as_slice());
+
+    match chunking::chunk_stream(cursor, Some(min), Some(avg), Some(max)) {
         Ok(chunks) => Ok(chunks
             .into_iter()
             .map(|(hash, offset, length)| {
@@ -199,6 +202,9 @@ fn chunk_data<'a>(
             .collect()),
         Err(chunking::ChunkingError::Bounds { .. }) => Err(rustler::error::Error::Term(Box::new(
             atoms::chunk_bounds_invalid(),
+        ))),
+        Err(chunking::ChunkingError::Io(_)) => Err(rustler::error::Error::Term(Box::new(
+            atoms::io_error(),
         ))),
     }
 }
