@@ -202,6 +202,26 @@ pub fn chunk_stream_async<R: AsyncRead + Unpin>(
     ChunkStream::new(AsyncReadAdapter { inner: reader }, min_size, avg_size, max_size)
 }
 
+/// Convenience function to chunk a stream and collect all chunk metadata into a vector.
+/// This is useful when you want to process a stream but need all chunk metadata at once.
+/// Note: The offset is cast to `usize` to match `chunk_data`'s return type.
+pub fn chunk_stream<R: Read>(
+    reader: R,
+    min_size: Option<usize>,
+    avg_size: Option<usize>,
+    max_size: Option<usize>,
+) -> Result<Vec<(String, usize, usize)>, ChunkingError> {
+    let stream = ChunkStream::new(reader, min_size, avg_size, max_size);
+    let mut chunks = Vec::new();
+    for chunk in stream {
+        let chunk = chunk?;
+        #[allow(clippy::cast_possible_truncation)]
+        let offset = chunk.offset as usize;
+        chunks.push((chunk.hash, offset, chunk.length));
+    }
+    Ok(chunks)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
