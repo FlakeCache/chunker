@@ -22,6 +22,7 @@ mod atoms {
         xz_compression_failed,
         xz_decompression_failed,
         chunk_bounds_invalid,
+        io_error,
     }
 }
 
@@ -201,6 +202,9 @@ fn chunk_data<'a>(
             .collect()),
         Err(chunking::ChunkingError::Bounds { .. }) => Err(rustler::error::Error::Term(Box::new(
             atoms::chunk_bounds_invalid(),
+        ))),
+        Err(chunking::ChunkingError::Io(_)) => Err(rustler::error::Error::Term(Box::new(
+            atoms::io_error(),
         ))),
     }
 }
