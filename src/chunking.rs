@@ -21,6 +21,8 @@ pub enum ChunkingError {
     Io(#[from] std::io::Error),
     #[error("compression_error: {0}")]
     Compression(#[from] compression::CompressionError),
+    #[error("thread_panic: {0}")]
+    ThreadPanic(String),
 }
 
 /// Validate slice bounds to prevent out-of-bounds access
@@ -143,7 +145,7 @@ pub fn process_stream_with_pipeline<R: Read + Send + 'static>(
                 Ok(result) => result,
                 Err(err) => {
                     let _ = compressed_tx.send(Err(err));
-                    continue;
+                    break;
                 }
             };
             let processed = ProcessedChunk {
@@ -193,14 +195,22 @@ pub fn process_stream_with_pipeline<R: Read + Send + 'static>(
     })?;
 
     drop(chunk_tx);
-    let _ = hashing_handle.join();
-    let _ = compression_handle.join();
+    
+    // Handle thread panics properly
+    hashing_handle
+        .join()
+        .map_err(|e| ChunkingError::ThreadPanic(format!("hashing thread panicked: {e:?}")))?;
+    compression_handle
+        .join()
+        .map_err(|e| ChunkingError::ThreadPanic(format!("compression thread panicked: {e:?}")))?;
 
     let collected = collector_rx
         .recv()
         .map_err(|err| ChunkingError::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, err)))?;
 
-    let _ = collector_handle.join();
+    collector_handle
+        .join()
+        .map_err(|e| ChunkingError::ThreadPanic(format!("collector thread panicked: {e:?}")))?;
 
     collected
 }
@@ -241,11 +251,11 @@ fn stream_chunks<R: Read>(
 
         let chunker = FastCDC::new(&buffer, min, avg, max);
         let mut produced: Vec<_> = chunker.collect();
-        let mut pending = None;
-
-        if !eof {
-            pending = produced.pop();
-        }
+        let mut pending = if !eof {
+            produced.pop()
+        } else {
+            None
+        };
 
         for chunk in produced {
             validate_slice_bounds(buffer.len(), chunk.offset, chunk.length)?;
@@ -284,7 +294,7 @@ fn stream_chunks<R: Read>(
         base_offset += retain_start;
 
         if retain_start > 0 {
-            let _ = buffer.drain(0..retain_start);
+            buffer = buffer.split_off(retain_start);
         }
     }
 
