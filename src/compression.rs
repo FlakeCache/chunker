@@ -100,16 +100,18 @@ pub struct CompressionResult {
 
 /// Spawn a bounded zstd compression worker that processes payloads in submission
 /// order. The worker terminates when it receives `None`.
+/// Returns (sender, receiver, worker_handle) for panic detection and synchronization.
 pub fn spawn_zstd_worker(
     bound: usize,
 ) -> (
     SyncSender<Option<CompressionJob>>,
     Receiver<Result<CompressionResult, CompressionError>>,
+    std::thread::JoinHandle<()>,
 ) {
     let (job_tx, job_rx) = sync_channel(bound);
     let (result_tx, result_rx) = sync_channel(bound);
 
-    let _ = std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         while let Ok(message) = job_rx.recv() {
             let Some(job): Option<CompressionJob> = message else {
                 break;
@@ -125,5 +127,5 @@ pub fn spawn_zstd_worker(
         }
     });
 
-    (job_tx, result_rx)
+    (job_tx, result_rx, handle)
 }

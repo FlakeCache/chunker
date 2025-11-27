@@ -91,11 +91,18 @@ pub struct HashResult {
 
 /// Spawn a bounded hashing worker that preserves submission order.
 /// The worker terminates when it receives `None` via the job channel.
-pub fn spawn_hashing_worker(bound: usize) -> (SyncSender<Option<HashJob>>, Receiver<HashResult>) {
+/// Returns (sender, receiver, worker_handle) for panic detection and synchronization.
+pub fn spawn_hashing_worker(
+    bound: usize,
+) -> (
+    SyncSender<Option<HashJob>>,
+    Receiver<HashResult>,
+    std::thread::JoinHandle<()>,
+) {
     let (job_tx, job_rx) = sync_channel(bound);
     let (result_tx, result_rx) = sync_channel(bound);
 
-    let _ = std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         while let Ok(message) = job_rx.recv() {
             let Some(job): Option<HashJob> = message else {
                 break;
@@ -113,5 +120,5 @@ pub fn spawn_hashing_worker(bound: usize) -> (SyncSender<Option<HashJob>>, Recei
         }
     });
 
-    (job_tx, result_rx)
+    (job_tx, result_rx, handle)
 }

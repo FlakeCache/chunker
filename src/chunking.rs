@@ -93,7 +93,7 @@ pub fn chunk_stream<R: Read>(
     let mut next_index: usize = 0;
     let mut pending_results: BTreeMap<usize, (String, usize, usize)> = BTreeMap::new();
 
-    let (job_tx, result_rx) = crate::hashing::spawn_hashing_worker(4);
+    let (job_tx, result_rx, worker_handle) = crate::hashing::spawn_hashing_worker(4);
     let mut submitted = 0usize;
 
     let mut read_buf = [0u8; 65_536];
@@ -148,7 +148,25 @@ pub fn chunk_stream<R: Read>(
         );
     }
 
-    Ok(chunks)
+    // Wait for worker thread to finish and detect panics
+    match worker_handle.join() {
+        Ok(()) => {
+            // Verify we received all expected results
+            if chunks.len() != submitted {
+                return Err(ChunkingError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("worker incomplete: expected {} results, got {}", submitted, chunks.len()),
+                )));
+            }
+            Ok(chunks)
+        }
+        Err(_) => {
+            return Err(ChunkingError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "hashing worker thread panicked",
+            )));
+        }
+    }
 }
 
 fn submit_ready_chunks(
