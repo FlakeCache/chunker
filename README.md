@@ -111,6 +111,27 @@ Releases published to [GitHub Releases](https://github.com/FlakeCache/chunker/re
 Format: `MAJOR.MINOR.PATCH` (semver)
 - Pre-releases: `-alpha`, `-beta`, `-rc`
 
+## Release
+
+## Release
+
+To create a new release:
+
+1. Bump the version in `Cargo.toml`.
+2. Create and push a git tag:
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+The GitHub Actions workflow will automatically:
+- Build the release binary using Nix.
+- Package it into a `chunker-<version>.tar.gz` archive.
+- Attest the build provenance.
+- Create a GitHub release with the archive attached.
+
+
 ## License
 
 Apache License 2.0

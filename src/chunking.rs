@@ -264,3 +264,53 @@ fn flush_pending(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chunk_data_basic() -> Result<(), ChunkingError> {
+        let data = vec![0u8; 1024 * 1024]; // 1MB
+        let chunks = chunk_data(&data, None, None, None)?;
+
+        assert!(!chunks.is_empty());
+
+        let mut total_len = 0;
+        for (_hash, offset, length) in &chunks {
+            assert_eq!(*offset, total_len);
+            total_len += length;
+        }
+        assert_eq!(total_len, data.len());
+        Ok(())
+    }
+
+    #[test]
+    fn test_chunk_data_small() -> Result<(), ChunkingError> {
+        let data = b"small data";
+        let chunks = chunk_data(data, None, None, None)?;
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].1, 0);
+        assert_eq!(chunks[0].2, data.len());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod internal_tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_slice_bounds() {
+        assert!(validate_slice_bounds(100, 0, 100).is_ok());
+        assert!(validate_slice_bounds(100, 10, 90).is_ok());
+        
+        // Out of bounds
+        assert!(matches!(validate_slice_bounds(100, 0, 101), Err(ChunkingError::Bounds { .. })));
+        assert!(matches!(validate_slice_bounds(100, 90, 20), Err(ChunkingError::Bounds { .. })));
+        
+        // Overflow
+        assert!(matches!(validate_slice_bounds(100, usize::MAX, 1), Err(ChunkingError::Bounds { .. })));
+    }
+}

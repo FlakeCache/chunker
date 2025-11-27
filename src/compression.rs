@@ -129,3 +129,43 @@ pub fn spawn_zstd_worker(
 
     (job_tx, result_rx, handle)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_xz_roundtrip() -> Result<(), CompressionError> {
+        let data = b"hello world xz compression test";
+        let compressed = compress_xz(data, None)?;
+        let decompressed = decompress_xz(&compressed)?;
+        assert_eq!(data, decompressed.as_slice());
+        Ok(())
+    }
+
+    #[test]
+    fn test_zstd_worker() -> Result<(), String> {
+        let (tx, rx, handle) = spawn_zstd_worker(10);
+        
+        let data = b"worker test data";
+        tx.send(Some(CompressionJob {
+            index: 0,
+            payload: data.to_vec(),
+            level: None,
+        }))
+        .map_err(|err| err.to_string())?;
+        tx.send(None).map_err(|err| err.to_string())?;
+
+        let result = rx
+            .recv()
+            .map_err(|err| err.to_string())?
+            .map_err(|err| err.to_string())?;
+        assert_eq!(result.index, 0);
+        
+        let decompressed = decompress_zstd(&result.compressed).map_err(|err| err.to_string())?;
+        assert_eq!(decompressed, data);
+
+        handle.join().map_err(|_| "worker panicked".to_string())?;
+        Ok(())
+    }
+}

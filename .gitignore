@@ -39,3 +39,7 @@ test-results/
 # Dependencies
 .nix-cargo/
 .nix-mix/
+
+# Release artifacts
+chunker-*.tar.gz
+flake.lock

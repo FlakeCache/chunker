@@ -93,3 +93,41 @@ pub fn verify_signature(
         .verify(data, &signature)
         .map_err(|_| SigningError::VerificationFailed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_signing_errors() -> Result<(), SigningError> {
+        let (secret, public) = generate_keypair();
+        let data = b"test";
+        let signature = sign_data(data, &secret)?;
+
+        // Invalid secret key (base64 decode error)
+        assert!(matches!(sign_data(data, "invalid-base64"), Err(SigningError::DecodeError)));
+
+        // Invalid secret key (wrong length)
+        let short_key = BASE64.encode([0u8; 31]);
+        assert!(matches!(sign_data(data, &short_key), Err(SigningError::InvalidSecretKey)));
+
+        // Invalid public key (base64 decode error)
+        assert!(matches!(verify_signature(data, &signature, "invalid-base64"), Err(SigningError::DecodeError)));
+
+        // Invalid public key (wrong length)
+        let short_pub = BASE64.encode([0u8; 31]);
+        assert!(matches!(verify_signature(data, &signature, &short_pub), Err(SigningError::InvalidPublicKey)));
+
+        // Invalid signature (base64 decode error)
+        assert!(matches!(verify_signature(data, "invalid-base64", &public), Err(SigningError::DecodeError)));
+
+        // Invalid signature (wrong length)
+        let short_sig = BASE64.encode([0u8; 63]);
+        assert!(matches!(verify_signature(data, &short_sig, &public), Err(SigningError::InvalidSignature)));
+
+        // Verification failed
+        let other_sig = sign_data(b"other", &secret)?;
+        assert!(matches!(verify_signature(data, &other_sig, &public), Err(SigningError::VerificationFailed)));
+        Ok(())
+    }
+}

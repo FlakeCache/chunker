@@ -1,11 +1,13 @@
 [package]
 name = "chunker"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["FlakeCache Team"]
 edition = "2021"
 description = "High-performance content-defined chunking for Nix NARs (Rustler NIF + standalone library)"
 license = "Apache-2.0"
 repository = "https://github.com/FlakeCache/chunker"
+homepage = "https://github.com/FlakeCache/chunker"
+documentation = "https://github.com/FlakeCache/chunker"
 readme = "README.md"
 categories = ["algorithms", "compression", "cryptography"]
 keywords = ["nix", "nar", "hash", "sign", "compress", "chunk", "fastcdc", "rustler", "nif"]
@@ -30,8 +32,8 @@ rustler = { version = "0.37.0", optional = true }
 thiserror = "1.0"
 
 # Cryptography
-ed25519-dalek = { version = "2.2", features = ["rand_core"] }
-sha2 = "0.10.9"
+ed25519-dalek = { version = "2.2", features = ["rand_core", "fast", "batch"] }
+sha2 = { version = "0.10.9", features = ["asm"] }
 
 # Compression
 zstd = "0.13.3"
@@ -46,6 +48,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 
 # Random number generation for key generation
+
 # Using 0.8 for compatibility with ed25519-dalek 2.2 (requires rand_core 0.6)
 rand = "0.8"
 
@@ -57,6 +60,13 @@ base64 = "0.22.1"
 
 [dev-dependencies]
 tempfile = "3.12.0"
+proptest = "1.4"
+criterion = "0.5"
+fastcdc = "3.2.1"
+
+[[bench]]
+name = "throughput"
+harness = false
 
 # =============================================================================
 # Enterprise-Grade Clippy Lints Configuration

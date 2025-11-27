@@ -90,6 +90,9 @@ fn verify_signature<'a>(
         Err(signing::SigningError::InvalidPublicKey) => Err(rustler::error::Error::Term(Box::new(
             atoms::invalid_public_key(),
         ))),
+        Err(signing::SigningError::InvalidSecretKey) => Err(rustler::error::Error::Term(Box::new(
+            atoms::invalid_secret_key(),
+        ))),
         Err(signing::SigningError::InvalidSignature) => Err(rustler::error::Error::Term(Box::new(
             atoms::invalid_signature_length(),
         ))),
@@ -113,7 +116,8 @@ fn sha256_hash<'a>(env: Env<'a>, data: Binary<'a>) -> NifResult<String> {
 }
 
 #[rustler::nif]
-fn nix_base32_encode<'a>(_env: Env<'a>, data: Binary<'a>) -> NifResult<String> {
+fn nix_base32_encode<'a>(env: Env<'a>, data: Binary<'a>) -> NifResult<String> {
+    let _ = env;
     Ok(hashing::nix_base32_encode(data.as_slice()))
 }
 
@@ -177,12 +181,13 @@ fn decompress_xz<'a>(env: Env<'a>, data: Binary<'a>) -> NifResult<Binary<'a>> {
 
 #[rustler::nif]
 fn chunk_data<'a>(
-    _env: Env<'a>,
+    env: Env<'a>,
     data: Binary<'a>,
     min_size: Option<u32>,
     avg_size: Option<u32>,
     max_size: Option<u32>,
 ) -> NifResult<Vec<(String, u32, u32)>> {
+    let _ = env;
     let min = min_size.unwrap_or(16_384) as usize;
     let avg = avg_size.unwrap_or(65_536) as usize;
     let max = max_size.unwrap_or(262_144) as usize;
