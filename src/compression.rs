@@ -17,6 +17,31 @@ pub enum CompressionError {
 /// expands to exhaust memory (e.g., 1KB → 10GB).
 const MAX_DECOMPRESSED_SIZE: u64 = 10 * 1024 * 1024 * 1024;
 
+/// Compress data using `lz4`
+/// Args: data (binary)
+#[instrument(skip(data), fields(data_len = data.len()))]
+pub fn compress_lz4(data: &[u8]) -> Result<Vec<u8>, CompressionError> {
+    let compressed = lz4_flex::compress_prepend_size(data);
+    debug!(compressed_len = compressed.len(), "lz4_compression_complete");
+    Ok(compressed)
+}
+
+/// Decompress `lz4` data
+#[instrument(skip(data), fields(data_len = data.len()))]
+pub fn decompress_lz4(data: &[u8]) -> Result<Vec<u8>, CompressionError> {
+    let decompressed = lz4_flex::decompress_size_prepended(data)
+        .map_err(|e| CompressionError::Decompression(e.to_string()))?;
+
+    // Check if we hit the size limit (indicates potential decompression bomb)
+    if decompressed.len() as u64 > MAX_DECOMPRESSED_SIZE {
+        warn!("lz4_decompression_bomb_detected");
+        return Err(CompressionError::SizeExceeded);
+    }
+
+    debug!(decompressed_len = decompressed.len(), "lz4_decompression_complete");
+    Ok(decompressed)
+}
+
 /// Compress data using `zstd`
 /// Args: data (binary), `level` (optional, default 3)
 #[instrument(skip(data), fields(data_len = data.len(), level = ?level))]
@@ -192,6 +217,15 @@ mod tests {
         let data = b"hello world bzip2 compression test";
         let compressed = compress_bzip2(data, None)?;
         let decompressed = decompress_bzip2(&compressed)?;
+        assert_eq!(data, decompressed.as_slice());
+        Ok(())
+    }
+
+    #[test]
+    fn test_lz4_roundtrip() -> Result<(), CompressionError> {
+        let data = b"hello world lz4 compression test";
+        let compressed = compress_lz4(data)?;
+        let decompressed = decompress_lz4(&compressed)?;
         assert_eq!(data, decompressed.as_slice());
         Ok(())
     }
