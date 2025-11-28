@@ -926,7 +926,7 @@ mod tests {
         let mut total = 0_usize;
         let mut count = 0_usize;
 
-        while let Some(chunk) = stream.next() {
+        for chunk in stream {
             let chunk = chunk?;
             total += chunk.length;
             count += 1;

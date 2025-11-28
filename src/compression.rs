@@ -598,6 +598,7 @@ pub fn spawn_zstd_worker(bound: usize) -> ZstdWorkerHandle {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
