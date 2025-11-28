@@ -402,64 +402,56 @@ impl<R: Read> Iterator for ChunkStream<R> {
                     let current_position = self.position;
                     let hash_algo = self.hash;
 
-                    let chunks: Vec<Result<ChunkMetadata, ChunkingError>> = cut_points
-                        .par_iter()
-                        .map(|chunk| {
-                            let len = chunk.length;
-                            // The offset in `batch_data` is relative to the start of the batch.
-                            // Since we collected chunks sequentially from the start of the buffer,
-                            // and `batch_data` corresponds exactly to `total_len`,
-                            // the offset of chunk[i] in `batch_data` is the sum of lengths of chunks[0..i].
-                            // However, FastCDC returns offsets relative to the input slice.
-                            // Since we passed `&self.buffer`, the offsets are correct relative to `batch_data`.
-                            let offset = chunk.offset;
+                    // Helper closure for processing a single chunk
+                    let process_chunk = |chunk: &fastcdc::v2020::Chunk| {
+                        let len = chunk.length;
+                        let offset = chunk.offset;
 
-                            if offset + len > batch_data.len() {
-                                return Err(ChunkingError::Bounds {
-                                    data_len: batch_data.len(),
-                                    offset,
-                                    length: len,
-                                });
-                            }
-
-                            let chunk_slice = batch_data.slice(offset..offset + len);
-
-                            // Metrics (thread-safe)
-                            counter!("chunker.chunks_emitted").increment(1);
-                            counter!("chunker.bytes_processed").increment(len as u64);
-                            histogram!("chunker.chunk_size").record(len as f64);
-
-                            let hash_array: [u8; 32] = match hash_algo {
-                                HashAlgorithm::Sha256 => {
-                                    let mut hasher = Sha256::new();
-                                    hasher.update(&chunk_slice);
-                                    hasher.finalize().into()
-                                }
-                                HashAlgorithm::Blake3 => blake3::hash(&chunk_slice).into(),
-                            };
-
-                            // Calculate absolute offset
-                            // We need to know the cumulative length of previous chunks in this batch
-                            // But we can't easily share mutable state in par_iter.
-                            // Instead, we can calculate it after collecting, or pass it in?
-                            // Wait, `chunk.offset` is relative to the start of the batch.
-                            // So `current_position + chunk.offset` is the absolute offset.
-                            let chunk_offset = current_position + offset as u64;
-
-                            if tracing::enabled!(tracing::Level::TRACE)
-                                && TRACE_SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed).is_multiple_of(TRACE_SAMPLE_EVERY)
-                            {
-                                trace!(offset = chunk_offset, length = len, "chunk_emitted");
-                            }
-
-                            Ok(ChunkMetadata {
-                                hash: hash_array,
-                                offset: chunk_offset,
+                        if offset + len > batch_data.len() {
+                            return Err(ChunkingError::Bounds {
+                                data_len: batch_data.len(),
+                                offset,
                                 length: len,
-                                payload: chunk_slice,
-                            })
+                            });
+                        }
+
+                        let chunk_slice = batch_data.slice(offset..offset + len);
+
+                        // Metrics (thread-safe)
+                        counter!("chunker.chunks_emitted").increment(1);
+                        counter!("chunker.bytes_processed").increment(len as u64);
+                        histogram!("chunker.chunk_size").record(len as f64);
+
+                        let hash_array: [u8; 32] = match hash_algo {
+                            HashAlgorithm::Sha256 => {
+                                let mut hasher = Sha256::new();
+                                hasher.update(&chunk_slice);
+                                hasher.finalize().into()
+                            }
+                            HashAlgorithm::Blake3 => blake3::hash(&chunk_slice).into(),
+                        };
+
+                        let chunk_offset = current_position + offset as u64;
+
+                        if tracing::enabled!(tracing::Level::TRACE)
+                            && TRACE_SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed).is_multiple_of(TRACE_SAMPLE_EVERY)
+                        {
+                            trace!(offset = chunk_offset, length = len, "chunk_emitted");
+                        }
+
+                        Ok(ChunkMetadata {
+                            hash: hash_array,
+                            offset: chunk_offset,
+                            length: len,
+                            payload: chunk_slice,
                         })
-                        .collect();
+                    };
+
+                    let chunks: Vec<Result<ChunkMetadata, ChunkingError>> = if cut_points.len() > 4 {
+                        cut_points.par_iter().map(process_chunk).collect()
+                    } else {
+                        cut_points.iter().map(process_chunk).collect()
+                    };
 
                     // Update position
                     self.position += total_len as u64;

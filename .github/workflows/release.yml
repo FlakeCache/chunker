@@ -31,7 +31,8 @@ jobs:
         run: |
           nix develop .#default --command bash -c "
             cargo test --all --release
-            cargo test --all --release --all-features
+            cargo test --all --release --features telemetry
+            cargo test --all --release --features nif
             cargo clippy --all-features --all-targets -- -D warnings
             cargo fmt --all -- --check
             cargo build --release --all-features --bin chunker

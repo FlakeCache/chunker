@@ -238,7 +238,8 @@ fn chunk_data_streaming<'a>(
     let max = max_size.unwrap_or(4 * 1024 * 1024) as usize;
 
     let cursor = Cursor::new(data.as_slice());
-    let stream = chunking::ChunkStream::new(cursor, Some(min), Some(avg), Some(max));
+    let stream = chunking::ChunkStream::new(cursor, Some(min), Some(avg), Some(max))
+        .map_err(|_| rustler::error::Error::Term(Box::new(atoms::invalid_chunking_options())))?;
 
     let mut chunks = Vec::new();
     for chunk in stream {
@@ -254,6 +255,9 @@ fn chunk_data_streaming<'a>(
             }
             chunking::ChunkingError::InvalidOptions(_) => {
                 rustler::error::Error::Term(Box::new(atoms::invalid_chunking_options()))
+            }
+            chunking::ChunkingError::BufferLimitExceeded { .. } => {
+                rustler::error::Error::Term(Box::new(atoms::chunk_bounds_invalid()))
             }
         })?;
 

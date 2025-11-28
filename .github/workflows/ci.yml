@@ -38,8 +38,8 @@ jobs:
             cargo test --all --release\
           "
 
-  test-all-features:
-    name: Tests (all features)
+  test-telemetry:
+    name: Tests (telemetry)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,15 +56,42 @@ jobs:
         with:
           shared-key: ci-all-features
 
-      - name: Cargo test (all features)
+      - name: Cargo test (telemetry)
         run: |
           nix develop .#default --command bash -c "\
-            cargo test --all --release --all-features\
+            cargo test --all --release --features telemetry\
+          "
+
+  test-nif:
+    name: Tests (nif)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-nif
+
+      - name: Cargo test (nif)
+        run: |
+          nix develop .#default --command bash -c "\
+            cargo test --all --release --features nif\
           "
 
   clippy:
-    name: Clippy (all targets, all features)
+    name: Clippy (feature matrix)
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features: ["", "telemetry", "nif"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,7 +110,7 @@ jobs:
       - name: Cargo clippy
         run: |
           nix develop .#default --command bash -c "\
-            cargo clippy --all-features --all-targets -- -D warnings\
+            cargo clippy --all-targets --features \"${{ matrix.features }}\" -- -D warnings\
           "
 
   fmt:
