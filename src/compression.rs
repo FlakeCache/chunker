@@ -133,13 +133,16 @@ impl<R: Read + Send + 'static> AutoDecompressReader<R> {
             });
         }
 
+        // XZ: FD 37 7A 58 5A 00
         if header_slice.starts_with(&[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]) {
             debug!("detected_format_xz_stream");
-            let decoder = xz2::read::XzDecoder::new(stream);
-            return Ok(Self {
-                inner: Box::new(decoder.take(MAX_DECOMPRESSED_SIZE)),
-                _marker: std::marker::PhantomData,
-            });
+            // TODO: lzma-rs does not support streaming read yet.
+            // let decoder = xz2::read::XzDecoder::new(stream);
+            // return Ok(Self {
+            //     inner: Box::new(decoder.take(MAX_DECOMPRESSED_SIZE)),
+            //     _marker: std::marker::PhantomData,
+            // });
+            warn!("xz_stream_decompression_not_supported_with_lzma_rs");
         }
 
         if header_slice.starts_with(b"BZh") {
@@ -437,20 +440,14 @@ pub fn decompress_zstd_with_limit(data: &[u8], limit: u64) -> Result<Vec<u8>, Co
 /// # Errors
 ///
 /// Returns `CompressionError` if compression fails.
-pub fn compress_xz(data: &[u8], level: Option<u32>) -> Result<Vec<u8>, CompressionError> {
-    let compression_level = level.unwrap_or(6);
-
-    let mut encoder =
-        xz2::write::XzEncoder::new(Vec::with_capacity(data.len() / 2), compression_level);
-    encoder
-        .write_all(data)
+pub fn compress_xz(data: &[u8], _level: Option<u32>) -> Result<Vec<u8>, CompressionError> {
+    // lzma-rs defaults to level 6 equivalent
+    let mut output = Vec::with_capacity(data.len() / 2);
+    let mut input = data;
+    lzma_rs::xz_compress(&mut input, &mut output)
         .map_err(|e| CompressionError::Compression(e.to_string()))?;
 
-    let compressed = encoder
-        .finish()
-        .map_err(|e| CompressionError::Compression(e.to_string()))?;
-
-    Ok(compressed)
+    Ok(output)
 }
 
 /// Decompress `xz` data into a provided buffer.
@@ -460,19 +457,41 @@ pub fn compress_xz(data: &[u8], level: Option<u32>) -> Result<Vec<u8>, Compressi
 ///
 /// Returns `CompressionError` if decompression fails or size limit is exceeded.
 pub fn decompress_xz_into(data: &[u8], output: &mut Vec<u8>) -> Result<(), CompressionError> {
-    let decoder = xz2::read::XzDecoder::new(data);
-
-    // Limit reader to MAX_DECOMPRESSED_SIZE to prevent decompression bombs
-    let mut limited_reader = decoder.take(MAX_DECOMPRESSED_SIZE);
-    let start_len = output.len();
-    let _bytes_read = limited_reader
-        .read_to_end(output)
-        .map_err(|e| CompressionError::Decompression(e.to_string()))?;
-
-    // Check if we hit the size limit (indicates potential decompression bomb)
-    if (output.len() - start_len) as u64 == MAX_DECOMPRESSED_SIZE {
-        return Err(CompressionError::SizeExceeded);
+    struct LimitedWriter<'a> {
+        inner: &'a mut Vec<u8>,
+        limit: u64,
+        written: u64,
     }
+
+    impl<'a> Write for LimitedWriter<'a> {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.written + buf.len() as u64 > self.limit {
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "SizeExceeded"));
+            }
+            let n = self.inner.write(buf)?;
+            self.written += n as u64;
+            Ok(n)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    let mut input = data;
+    let mut writer = LimitedWriter {
+        inner: output,
+        limit: MAX_DECOMPRESSED_SIZE,
+        written: 0,
+    };
+
+    lzma_rs::xz_decompress(&mut input, &mut writer).map_err(|e| {
+        let s = e.to_string();
+        if s.contains("SizeExceeded") {
+            CompressionError::SizeExceeded
+        } else {
+            CompressionError::Decompression(s)
+        }
+    })?;
 
     Ok(())
 }

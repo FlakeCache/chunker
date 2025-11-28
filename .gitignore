@@ -43,3 +43,5 @@ test-results/
 # Release artifacts
 chunker-*.tar.gz
 flake.lock
+artifacts/
+dist/

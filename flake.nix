@@ -24,6 +24,8 @@
           pkg-config
           syft    # SBOM generation
           cosign  # Artifact signing
+          zig
+          cargo-zigbuild
         ];
 
         # Helper to create a Rust toolchain with specific targets

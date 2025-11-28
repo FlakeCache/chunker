@@ -53,7 +53,7 @@ zeroize = { version = "1.7", features = ["derive"] }
 
 # Compression
 zstd = "0.13.3"
-xz2 = "0.1.7"
+lzma-rs = "0.3.0"
 bzip2 = "0.6.1"
 
 # Content-defined chunking
