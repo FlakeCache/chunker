@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Ensure all spans are exported before exit
     global::shutdown_tracer_provider();
-    
+
     result
 }
 
@@ -54,7 +54,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
-    
+
     let reader: Box<dyn io::Read> = if args.len() > 1 && args[1] != "-" {
         let path = PathBuf::from(&args[1]);
         let file = File::open(&path)?;
@@ -68,7 +68,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     // Use default chunking options
     let stream = ChunkStream::new(reader, None, None, None)?;
-    
+
     let mut count = 0;
     let mut total_bytes = 0;
 
@@ -78,13 +78,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let chunk = chunk?;
         count += 1;
         total_bytes += chunk.length;
-        writeln!(stdout, "{}\t{}\t{}", chunk.hash_hex(), chunk.offset, chunk.length)?;
+        writeln!(
+            stdout,
+            "{}\t{}\t{}",
+            chunk.hash_hex(),
+            chunk.offset,
+            chunk.length
+        )?;
     }
 
     let duration = start.elapsed();
     let mb_per_sec = (total_bytes as f64 / 1_000_000.0) / duration.as_secs_f64();
 
-    eprintln!("Chunked {total_bytes} bytes into {count} chunks in {duration:.2?} ({mb_per_sec:.2} MB/s)");
+    eprintln!(
+        "Chunked {total_bytes} bytes into {count} chunks in {duration:.2?} ({mb_per_sec:.2} MB/s)"
+    );
 
     Ok(())
 }

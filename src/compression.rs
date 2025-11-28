@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use tracing::{debug, instrument, warn};
 
 /// Scratch buffers that can be reused to reduce allocations in tight loops.
@@ -53,19 +53,19 @@ pub fn decompress_auto_into(data: &[u8], output: &mut Vec<u8>) -> Result<(), Com
     }
 
     // Magic bytes checks
-    
+
     // Zstd: 0xFD2FB528 (Little Endian) -> 28 B5 2F FD
     if data.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]) {
         debug!("detected_format_zstd");
         return decompress_zstd_into(data, output);
     }
-    
+
     // XZ: FD 37 7A 58 5A 00
     if data.starts_with(&[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]) {
         debug!("detected_format_xz");
         return decompress_xz_into(data, output);
     }
-    
+
     // Bzip2: BZh
     if data.starts_with(b"BZh") {
         debug!("detected_format_bzip2");
@@ -119,7 +119,7 @@ impl<R: Read + Send + 'static> AutoDecompressReader<R> {
         let mut header = [0u8; 6];
         let n = reader.read(&mut header)?;
         let header_slice = &header[..n];
-        
+
         // Reconstruct the stream: header + rest
         let stream = std::io::Cursor::new(header_slice.to_vec()).chain(reader);
 
@@ -127,30 +127,45 @@ impl<R: Read + Send + 'static> AutoDecompressReader<R> {
         if header_slice.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]) {
             debug!("detected_format_zstd_stream");
             let decoder = zstd::Decoder::new(stream)?;
-            return Ok(Self { inner: Box::new(decoder.take(MAX_DECOMPRESSED_SIZE)), _marker: std::marker::PhantomData });
+            return Ok(Self {
+                inner: Box::new(decoder.take(MAX_DECOMPRESSED_SIZE)),
+                _marker: std::marker::PhantomData,
+            });
         }
 
         if header_slice.starts_with(&[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]) {
             debug!("detected_format_xz_stream");
             let decoder = xz2::read::XzDecoder::new(stream);
-            return Ok(Self { inner: Box::new(decoder.take(MAX_DECOMPRESSED_SIZE)), _marker: std::marker::PhantomData });
+            return Ok(Self {
+                inner: Box::new(decoder.take(MAX_DECOMPRESSED_SIZE)),
+                _marker: std::marker::PhantomData,
+            });
         }
 
         if header_slice.starts_with(b"BZh") {
             debug!("detected_format_bzip2_stream");
             let decoder = bzip2::read::BzDecoder::new(stream);
-            return Ok(Self { inner: Box::new(decoder.take(MAX_DECOMPRESSED_SIZE)), _marker: std::marker::PhantomData });
+            return Ok(Self {
+                inner: Box::new(decoder.take(MAX_DECOMPRESSED_SIZE)),
+                _marker: std::marker::PhantomData,
+            });
         }
 
         if header_slice.starts_with(&[0x04, 0x22, 0x4D, 0x18]) {
             debug!("detected_format_lz4_stream");
             let decoder = lz4_flex::frame::FrameDecoder::new(stream);
-            return Ok(Self { inner: Box::new(decoder.take(MAX_DECOMPRESSED_SIZE)), _marker: std::marker::PhantomData });
+            return Ok(Self {
+                inner: Box::new(decoder.take(MAX_DECOMPRESSED_SIZE)),
+                _marker: std::marker::PhantomData,
+            });
         }
 
         // Fallback: Assume uncompressed
         debug!("detected_format_uncompressed_stream");
-        Ok(Self { inner: Box::new(stream.take(MAX_DECOMPRESSED_SIZE)), _marker: std::marker::PhantomData })
+        Ok(Self {
+            inner: Box::new(stream.take(MAX_DECOMPRESSED_SIZE)),
+            _marker: std::marker::PhantomData,
+        })
     }
 }
 
@@ -171,10 +186,7 @@ const MAX_DECOMPRESSED_SIZE: u64 = DEFAULT_MAX_DECOMPRESSED_SIZE;
 /// # Errors
 ///
 /// Returns `CompressionError` if decompression fails or size limit is exceeded.
-pub fn decompress_zstd_into(
-    data: &[u8],
-    output: &mut Vec<u8>,
-) -> Result<(), CompressionError> {
+pub fn decompress_zstd_into(data: &[u8], output: &mut Vec<u8>) -> Result<(), CompressionError> {
     decompress_zstd_into_with_limit(data, output, DEFAULT_MAX_DECOMPRESSED_SIZE)
 }
 
@@ -217,7 +229,10 @@ pub fn decompress_zstd_into_with_limit_and_dict(
             warn!("zstd_decompression_bomb_detected");
             return Err(CompressionError::SizeExceeded);
         }
-        debug!(decompressed_len = output.len() - start_len, "zstd_decompression_complete");
+        debug!(
+            decompressed_len = output.len() - start_len,
+            "zstd_decompression_complete"
+        );
         return Ok(());
     }
 
@@ -235,7 +250,10 @@ pub fn decompress_zstd_into_with_limit_and_dict(
         warn!("zstd_decompression_bomb_detected");
         return Err(CompressionError::SizeExceeded);
     }
-    debug!(decompressed_len = output.len() - start_len, "zstd_decompression_complete");
+    debug!(
+        decompressed_len = output.len() - start_len,
+        "zstd_decompression_complete"
+    );
     Ok(())
 }
 
@@ -248,10 +266,17 @@ pub fn decompress_zstd_into_with_limit_and_dict(
 #[instrument(skip(data), fields(data_len = data.len()))]
 pub fn compress_lz4(data: &[u8]) -> Result<Vec<u8>, CompressionError> {
     let mut encoder = lz4_flex::frame::FrameEncoder::new(Vec::with_capacity(data.len() / 2));
-    encoder.write_all(data).map_err(|e| CompressionError::Compression(e.to_string()))?;
-    let compressed = encoder.finish().map_err(|e| CompressionError::Compression(e.to_string()))?;
-    
-    debug!(compressed_len = compressed.len(), "lz4_compression_complete");
+    encoder
+        .write_all(data)
+        .map_err(|e| CompressionError::Compression(e.to_string()))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|e| CompressionError::Compression(e.to_string()))?;
+
+    debug!(
+        compressed_len = compressed.len(),
+        "lz4_compression_complete"
+    );
     Ok(compressed)
 }
 
@@ -263,8 +288,12 @@ pub fn compress_lz4(data: &[u8]) -> Result<Vec<u8>, CompressionError> {
 pub fn compress_lz4_into(data: &[u8], output: &mut Vec<u8>) -> Result<(), CompressionError> {
     output.clear();
     let mut encoder = lz4_flex::frame::FrameEncoder::new(std::mem::take(output));
-    encoder.write_all(data).map_err(|e| CompressionError::Compression(e.to_string()))?;
-    let compressed = encoder.finish().map_err(|e| CompressionError::Compression(e.to_string()))?;
+    encoder
+        .write_all(data)
+        .map_err(|e| CompressionError::Compression(e.to_string()))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|e| CompressionError::Compression(e.to_string()))?;
     *output = compressed;
     Ok(())
 }
@@ -276,11 +305,13 @@ pub fn compress_lz4_into(data: &[u8], output: &mut Vec<u8>) -> Result<(), Compre
 /// Returns `CompressionError` if decompression fails or size limit is exceeded.
 pub fn decompress_lz4_into(data: &[u8], output: &mut Vec<u8>) -> Result<(), CompressionError> {
     let decoder = lz4_flex::frame::FrameDecoder::new(data);
-    
+
     // Limit reader to MAX_DECOMPRESSED_SIZE + 1 to detect overflow
     let mut limited_reader = decoder.take(MAX_DECOMPRESSED_SIZE + 1);
     let start_len = output.len();
-    let _bytes_read = limited_reader.read_to_end(output).map_err(|e| CompressionError::Decompression(e.to_string()))?;
+    let _bytes_read = limited_reader
+        .read_to_end(output)
+        .map_err(|e| CompressionError::Decompression(e.to_string()))?;
 
     // Check if we hit the size limit
     if (output.len() - start_len) as u64 > MAX_DECOMPRESSED_SIZE {
@@ -288,7 +319,10 @@ pub fn decompress_lz4_into(data: &[u8], output: &mut Vec<u8>) -> Result<(), Comp
         return Err(CompressionError::SizeExceeded);
     }
 
-    debug!(decompressed_len = output.len() - start_len, "lz4_decompression_complete");
+    debug!(
+        decompressed_len = output.len() - start_len,
+        "lz4_decompression_complete"
+    );
     Ok(())
 }
 
@@ -348,8 +382,12 @@ fn compress_zstd_into_internal(
     }
     .map_err(|e| CompressionError::Compression(e.to_string()))?;
 
-    encoder.write_all(data).map_err(|e| CompressionError::Compression(e.to_string()))?;
-    let _ = encoder.finish().map_err(|e| CompressionError::Compression(e.to_string()))?;
+    encoder
+        .write_all(data)
+        .map_err(|e| CompressionError::Compression(e.to_string()))?;
+    let _ = encoder
+        .finish()
+        .map_err(|e| CompressionError::Compression(e.to_string()))?;
 
     debug!(compressed_len = output.len(), "zstd_compression_complete");
     Ok(())
@@ -402,7 +440,8 @@ pub fn decompress_zstd_with_limit(data: &[u8], limit: u64) -> Result<Vec<u8>, Co
 pub fn compress_xz(data: &[u8], level: Option<u32>) -> Result<Vec<u8>, CompressionError> {
     let compression_level = level.unwrap_or(6);
 
-    let mut encoder = xz2::write::XzEncoder::new(Vec::with_capacity(data.len() / 2), compression_level);
+    let mut encoder =
+        xz2::write::XzEncoder::new(Vec::with_capacity(data.len() / 2), compression_level);
     encoder
         .write_all(data)
         .map_err(|e| CompressionError::Compression(e.to_string()))?;
@@ -459,7 +498,7 @@ pub fn decompress_xz(data: &[u8]) -> Result<Vec<u8>, CompressionError> {
 pub fn compress_bzip2(data: &[u8], level: Option<u32>) -> Result<Vec<u8>, CompressionError> {
     let compression_level = level.unwrap_or(6);
     let compression = bzip2::Compression::new(compression_level);
-    
+
     let mut encoder = bzip2::write::BzEncoder::new(Vec::with_capacity(data.len() / 2), compression);
     encoder
         .write_all(data)
@@ -534,9 +573,7 @@ pub type ZstdWorkerHandle = (
 /// The worker terminates when it receives `None`.
 /// Returns (sender, receiver, `worker_handle`) for panic detection and synchronization.
 #[must_use]
-pub fn spawn_zstd_worker(
-    bound: usize,
-) -> ZstdWorkerHandle {
+pub fn spawn_zstd_worker(bound: usize) -> ZstdWorkerHandle {
     let (job_tx, job_rx) = sync_channel(bound);
     let (result_tx, result_rx) = sync_channel(bound);
 
@@ -603,7 +640,7 @@ mod tests {
     #[test]
     fn test_auto_decompression() -> Result<(), CompressionError> {
         let data = b"auto decompression test payload";
-        
+
         // Test Zstd
         let zstd_compressed = compress_zstd(data, None)?;
         assert_eq!(decompress_auto(&zstd_compressed)?, data);
@@ -681,7 +718,7 @@ mod tests {
     #[test]
     fn test_auto_decompress_reader() -> Result<(), std::io::Error> {
         let data = b"streaming auto decompression test payload";
-        
+
         // Test Zstd Stream
         let zstd_compressed = compress_zstd(data, None).unwrap();
         let mut reader = AutoDecompressReader::new(std::io::Cursor::new(zstd_compressed))?;
@@ -708,7 +745,7 @@ mod tests {
     #[test]
     fn test_zstd_worker() -> Result<(), String> {
         let (tx, rx, handle) = spawn_zstd_worker(10);
-        
+
         let data = b"worker test data";
         tx.send(Some(CompressionJob {
             index: 0,
@@ -723,7 +760,7 @@ mod tests {
             .map_err(|err| err.to_string())?
             .map_err(|err| err.to_string())?;
         assert_eq!(result.index, 0);
-        
+
         let decompressed = decompress_zstd(&result.compressed).map_err(|err| err.to_string())?;
         assert_eq!(decompressed, data);
 

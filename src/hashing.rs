@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 #[derive(Debug, thiserror::Error, Clone, Copy)]
 pub enum HashingError {
@@ -54,11 +54,11 @@ pub fn blake3_hash(data: &[u8]) -> String {
 #[must_use]
 pub fn nix_base32_encode(data: &[u8]) -> String {
     let mut result = String::with_capacity((data.len() * 8).div_ceil(5));
-    
+
     for chunk in data.chunks(5) {
         let len = chunk.len();
         let mut b = 0u64;
-        
+
         for (i, &byte) in chunk.iter().enumerate() {
             b |= u64::from(byte) << (i * 8);
         }
@@ -82,7 +82,7 @@ pub fn nix_base32_encode(data: &[u8]) -> String {
 /// Returns `HashingError::InvalidCharacter` if the input contains characters not in the Nix base32 alphabet.
 pub fn nix_base32_decode(encoded: &str) -> Result<Vec<u8>, HashingError> {
     let mut result = Vec::with_capacity((encoded.len() * 5) / 8);
-    
+
     for chunk in encoded.as_bytes().chunks(8) {
         let mut b = 0u64;
         let len = chunk.len();
@@ -194,13 +194,16 @@ mod extra_tests {
 
     #[test]
     fn test_nix_base32_decode_errors() {
-        assert!(matches!(nix_base32_decode("invalid!"), Err(HashingError::InvalidCharacter)));
+        assert!(matches!(
+            nix_base32_decode("invalid!"),
+            Err(HashingError::InvalidCharacter)
+        ));
     }
 
     #[test]
     fn test_hashing_worker() -> Result<(), String> {
         let (tx, rx, handle) = spawn_hashing_worker(10);
-        
+
         let data = b"worker test data";
         tx.send(Some(HashJob {
             index: 0,

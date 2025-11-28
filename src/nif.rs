@@ -38,13 +38,13 @@ rustler::init!("Elixir.FlakecacheApp.Native.Chunker");
 #[rustler::nif]
 fn enable_logging(level: String) -> NifResult<rustler::Atom> {
     let filter = tracing_subscriber::EnvFilter::new(level);
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .finish();
+    let subscriber = tracing_subscriber::fmt().with_env_filter(filter).finish();
 
     match tracing::subscriber::set_global_default(subscriber) {
         Ok(()) => Ok(atoms::ok()),
-        Err(_) => Err(rustler::error::Error::Term(Box::new(atoms::logging_init_failed()))),
+        Err(_) => Err(rustler::error::Error::Term(Box::new(
+            atoms::logging_init_failed(),
+        ))),
     }
 }
 
@@ -205,22 +205,23 @@ fn chunk_data<'a>(
     match chunking::chunk_stream(cursor, Some(min), Some(avg), Some(max)) {
         Ok(chunks) => Ok(chunks
             .into_iter()
-            .map(|chunk| {
-                (chunk.hash_hex(), chunk.offset, chunk.length as u64)
-            })
+            .map(|chunk| (chunk.hash_hex(), chunk.offset, chunk.length as u64))
             .collect()),
-        Err(chunking::ChunkingError::Bounds { .. } | chunking::ChunkingError::BufferLimitExceeded { .. }) => Err(rustler::error::Error::Term(Box::new(
+        Err(
+            chunking::ChunkingError::Bounds { .. }
+            | chunking::ChunkingError::BufferLimitExceeded { .. },
+        ) => Err(rustler::error::Error::Term(Box::new(
             atoms::chunk_bounds_invalid(),
         ))),
-        Err(chunking::ChunkingError::Io(_)) => Err(rustler::error::Error::Term(Box::new(
-            atoms::io_error(),
-        ))),
-        Err(chunking::ChunkingError::ZeroLengthChunk) => Err(rustler::error::Error::Term(Box::new(
-            atoms::zero_length_chunk(),
-        ))),
-        Err(chunking::ChunkingError::InvalidOptions(_)) => Err(rustler::error::Error::Term(Box::new(
-            atoms::invalid_chunking_options(),
-        ))),
+        Err(chunking::ChunkingError::Io(_)) => {
+            Err(rustler::error::Error::Term(Box::new(atoms::io_error())))
+        }
+        Err(chunking::ChunkingError::ZeroLengthChunk) => Err(rustler::error::Error::Term(
+            Box::new(atoms::zero_length_chunk()),
+        )),
+        Err(chunking::ChunkingError::InvalidOptions(_)) => Err(rustler::error::Error::Term(
+            Box::new(atoms::invalid_chunking_options()),
+        )),
     }
 }
 
@@ -244,7 +245,8 @@ fn chunk_data_streaming<'a>(
     let mut chunks = Vec::new();
     for chunk in stream {
         let chunk = chunk.map_err(|err| match err {
-            chunking::ChunkingError::Bounds { .. } | chunking::ChunkingError::BufferLimitExceeded { .. } => {
+            chunking::ChunkingError::Bounds { .. }
+            | chunking::ChunkingError::BufferLimitExceeded { .. } => {
                 rustler::error::Error::Term(Box::new(atoms::chunk_bounds_invalid()))
             }
             chunking::ChunkingError::Io(_) => {

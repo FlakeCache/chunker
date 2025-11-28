@@ -40,7 +40,7 @@ telemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-ot
 [lib]
 name = "chunker"
 path = "src/lib.rs"
-crate-type = ["rlib", "cdylib"]
+crate-type = ["lib", "cdylib"]
 
 [dependencies]
 rustler = { version = "0.37.0", optional = true }

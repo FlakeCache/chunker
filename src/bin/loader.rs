@@ -16,8 +16,8 @@
 //! manually select a binary.
 
 use std::env;
-use std::process::Command;
 use std::path::PathBuf;
+use std::process::Command;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -25,7 +25,9 @@ use std::os::unix::process::CommandExt;
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let current_exe = env::current_exe().unwrap_or_else(|_| PathBuf::from("./chunker"));
-    let dir = current_exe.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let dir = current_exe
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
 
     // ------------------------------------------------------------------------
     // x86_64 Candidates (Intel/AMD) - Linux & Windows
@@ -68,8 +70,10 @@ fn main() {
 
             let binary_path = dir.join(&binary_name_with_ext);
             if binary_path.exists() {
-                eprintln!("[Loader] Detected support for '{feature}'. Executing: {binary_name_with_ext:?}");
-                
+                eprintln!(
+                    "[Loader] Detected support for '{feature}'. Executing: {binary_name_with_ext:?}"
+                );
+
                 let mut cmd = Command::new(binary_path);
                 let _ = cmd.args(&args);
 
