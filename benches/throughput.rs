@@ -24,7 +24,7 @@ fn benchmark_chunking(c: &mut Criterion) {
     let _ = group.bench_function("chunk_stream_10mb", |b| {
         b.iter(|| {
             let cursor = Cursor::new(black_box(&data));
-            let stream = ChunkStream::new(cursor, None, None, None);
+            let stream = ChunkStream::new(cursor, None, None, None).unwrap();
             for chunk in stream {
                 let _ = black_box(chunk.unwrap());
             }

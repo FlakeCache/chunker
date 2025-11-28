@@ -160,7 +160,7 @@ impl<R: Read + Send> Read for AutoDecompressReader<R> {
     }
 }
 
-/// Maximum decompressed size: 10GB
+/// Maximum decompressed size: 1GB
 /// Protects against decompression bomb attacks where a small compressed payload
 /// expands to exhaust memory (e.g., 1KB → 10GB).
 const DEFAULT_MAX_DECOMPRESSED_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB

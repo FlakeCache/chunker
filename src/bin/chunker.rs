@@ -66,7 +66,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = Instant::now();
     // Use default chunking options
-    let stream = ChunkStream::new(reader, None, None, None);
+    let stream = ChunkStream::new(reader, None, None, None)?;
     
     let mut count = 0;
     let mut total_bytes = 0;

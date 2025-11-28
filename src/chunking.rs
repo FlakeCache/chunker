@@ -3,6 +3,7 @@ use blake3;
 use bytes::{Bytes, BytesMut};
 use fastcdc::v2020::FastCDC;
 use metrics::{counter, histogram};
+#[cfg(feature = "async-stream")]
 use async_stream::try_stream;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -54,7 +55,7 @@ pub enum HashAlgorithm {
 /// Metadata for a single chunk emitted by streaming chunkers.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ChunkMetadata {
-    /// SHA-256 hash of the chunk payload (32 bytes).
+    /// SHA-256 or Blake3 hash of the chunk payload (32 bytes).
     /// Using raw bytes is more efficient than hex strings for storage/transmission.
     #[serde(with = "hex_serde")]
     pub hash: [u8; 32],
@@ -263,15 +264,22 @@ impl<R: Read> fmt::Debug for ChunkStream<R> {
 impl<R: Read> ChunkStream<R> {
     /// Create a streaming chunker around any [`std::io::Read`] implementation.
     /// Uses `FastCDC` with optional min/avg/max overrides.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ChunkingError::InvalidOptions` if the provided sizes are invalid.
     #[instrument(skip(reader))]
-    pub fn new(reader: R, min_size: Option<usize>, avg_size: Option<usize>, max_size: Option<usize>) -> Self {
+    pub fn new(reader: R, min_size: Option<usize>, avg_size: Option<usize>, max_size: Option<usize>) -> Result<Self, ChunkingError> {
         Self::new_with_hash(reader, min_size, avg_size, max_size, HashAlgorithm::Sha256)
     }
 
     /// Create a streaming chunker with an explicit hash algorithm.
     ///
-    /// This initializes the internal slab buffer to `max_size * 2` to ensure efficient
-    /// reading and chunking with minimal syscalls.
+    /// This initializes the internal slab buffer lazily to avoid large allocations upfront.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ChunkingError::InvalidOptions` if the provided sizes are invalid.
     #[instrument(skip(reader))]
     pub fn new_with_hash(
         reader: R,
@@ -279,27 +287,15 @@ impl<R: Read> ChunkStream<R> {
         avg_size: Option<usize>,
         max_size: Option<usize>,
         hash: HashAlgorithm,
-    ) -> Self {
-        // If validation fails, we fall back to safe defaults.
-        // In a library context, we might want to return Result, but for the iterator API
-        // we'll log the error and use defaults.
-        let options = match ChunkingOptions::resolve(min_size, avg_size, max_size) {
-            Ok(opts) => opts,
-            Err(e) => {
-                tracing::error!(error = ?e, "invalid_chunking_options_fallback_to_defaults");
-                ChunkingOptions::resolve(None, None, None).unwrap_or(ChunkingOptions {
-                    min_size: 256 * 1024,
-                    avg_size: 1024 * 1024,
-                    max_size: 4 * 1024 * 1024,
-                })
-            }
-        };
+    ) -> Result<Self, ChunkingError> {
+        let options = ChunkingOptions::resolve(min_size, avg_size, max_size)?;
 
-        // Pre-allocate buffer to hold at least one max chunk + some read overhead
-        let capacity = std::cmp::max(options.max_size * 2, 1024 * 1024);
-        let buffer = BytesMut::with_capacity(capacity);
+        // Start with a small buffer (e.g. min_size) and let BytesMut grow as needed.
+        // We cap the initial allocation to avoid OOM on creation if max_size is huge.
+        let initial_capacity = std::cmp::min(options.min_size, 64 * 1024);
+        let buffer = BytesMut::with_capacity(initial_capacity);
 
-        Self {
+        Ok(Self {
             reader,
             buffer,
             min_size: options.min_size,
@@ -308,7 +304,7 @@ impl<R: Read> ChunkStream<R> {
             hash,
             position: 0,
             eof: false,
-        }
+        })
     }
 }
 
@@ -487,11 +483,19 @@ impl<R> Unpin for ChunkStreamAsync<R> {}
 #[cfg(feature = "async-stream")]
 impl<R: AsyncRead + Unpin + Send + 'static> ChunkStreamAsync<R> {
     /// Create a streaming chunker around any [`futures::io::AsyncRead`] implementation.
-    pub fn new(reader: R, min_size: Option<usize>, avg_size: Option<usize>, max_size: Option<usize>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `ChunkingError::InvalidOptions` if the provided sizes are invalid.
+    pub fn new(reader: R, min_size: Option<usize>, avg_size: Option<usize>, max_size: Option<usize>) -> Result<Self, ChunkingError> {
         Self::new_with_hash(reader, min_size, avg_size, max_size, HashAlgorithm::Sha256)
     }
 
     /// Create a streaming chunker with an explicit hash algorithm.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ChunkingError::InvalidOptions` if the provided sizes are invalid.
     #[allow(clippy::too_many_lines)]
     pub fn new_with_hash(
         mut reader: R,
@@ -499,21 +503,13 @@ impl<R: AsyncRead + Unpin + Send + 'static> ChunkStreamAsync<R> {
         avg_size: Option<usize>,
         max_size: Option<usize>,
         hash: HashAlgorithm,
-    ) -> Self {
-        let options = match ChunkingOptions::resolve(min_size, avg_size, max_size) {
-            Ok(opts) => opts,
-            Err(e) => {
-                tracing::error!(error = ?e, "invalid_chunking_options_fallback_to_defaults");
-                ChunkingOptions::resolve(None, None, None).unwrap_or(ChunkingOptions {
-                    min_size: 256 * 1024,
-                    avg_size: 1024 * 1024,
-                    max_size: 4 * 1024 * 1024,
-                })
-            }
-        };
+    ) -> Result<Self, ChunkingError> {
+        let options = ChunkingOptions::resolve(min_size, avg_size, max_size)?;
 
-        let capacity = std::cmp::max(options.max_size * 2, 1024 * 1024);
-        let mut buffer = BytesMut::with_capacity(capacity);
+        // Start with a small buffer (e.g. min_size) and let BytesMut grow as needed.
+        // We cap the initial allocation to avoid OOM on creation if max_size is huge.
+        let initial_capacity = std::cmp::min(options.min_size, 64 * 1024);
+        let mut buffer = BytesMut::with_capacity(initial_capacity);
         let mut position = 0u64;
         let mut eof = false;
 
@@ -642,10 +638,10 @@ impl<R: AsyncRead + Unpin + Send + 'static> ChunkStreamAsync<R> {
             }
         };
 
-        Self {
+        Ok(Self {
             stream: Box::pin(stream),
             _phantom: std::marker::PhantomData,
-        }
+        })
     }
 }
 
@@ -707,7 +703,7 @@ pub async fn chunk_data_async<R: AsyncRead + Unpin + Send + 'static>(
     avg_size: Option<usize>,
     max_size: Option<usize>,
 ) -> Result<Vec<ChunkMetadata>, ChunkingError> {
-    let mut stream = ChunkStreamAsync::new(reader, min_size, avg_size, max_size);
+    let mut stream = ChunkStreamAsync::new(reader, min_size, avg_size, max_size)?;
     let mut chunks = Vec::new();
     let mut total_len = 0;
 
@@ -798,7 +794,7 @@ pub fn chunk_stream_with_hash<R: Read>(
     max_size: Option<usize>,
     hash: HashAlgorithm,
 ) -> Result<Vec<ChunkMetadata>, ChunkingError> {
-    let stream = ChunkStream::new_with_hash(reader, min_size, avg_size, max_size, hash);
+    let stream = ChunkStream::new_with_hash(reader, min_size, avg_size, max_size, hash)?;
     let mut chunks = Vec::with_capacity(128);
     for chunk in stream {
         chunks.push(chunk?);
@@ -818,7 +814,7 @@ mod tests {
         let cursor = Cursor::new(&data);
         let reader = BufReader::new(cursor);
 
-        let mut stream = ChunkStream::new(reader, None, Some(32 * 1024), Some(64 * 1024));
+        let mut stream = ChunkStream::new(reader, Some(16 * 1024), Some(32 * 1024), Some(64 * 1024))?;
         let mut total = 0_usize;
         let mut count = 0_usize;
 
@@ -837,7 +833,7 @@ mod tests {
     #[test]
     fn chunking_options_defaults_match_chunk_data() -> Result<(), ChunkingError> {
         let payload = b"streaming chunker parity test".repeat(2048);
-        let mut streaming = ChunkStream::new(Cursor::new(&payload), None, None, None);
+        let mut streaming = ChunkStream::new(Cursor::new(&payload), None, None, None)?;
         let collected: Vec<_> = streaming
             .by_ref()
             .collect::<Result<_, _>>()?;

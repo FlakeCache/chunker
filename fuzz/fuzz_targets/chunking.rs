@@ -9,7 +9,7 @@ fuzz_target!(|data: &[u8]| {
     
     // Initialize ChunkStream with standard options
     // This exercises the internal BytesMut slab buffer logic
-    let stream = ChunkStream::new(reader, None, None, None);
+    let stream = ChunkStream::new(reader, None, None, None).expect("Failed to create stream");
     
     let mut reconstructed = Vec::with_capacity(data.len());
     let mut total_len = 0;
