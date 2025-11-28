@@ -15,13 +15,13 @@ fn benchmark_hashing(c: &mut Criterion) {
     let _ = group.bench_function("sha256", |b| {
         b.iter(|| {
             let _ = black_box(hashing::sha256_hash(black_box(&data)));
-        })
+        });
     });
 
     let _ = group.bench_function("blake3", |b| {
         b.iter(|| {
             let _ = black_box(hashing::blake3_hash(black_box(&data)));
-        })
+        });
     });
 
     group.finish();
