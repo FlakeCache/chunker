@@ -34,6 +34,8 @@ jobs:
             cargo test --all --release --all-features
             cargo clippy --all-features --all-targets -- -D warnings
             cargo fmt --all -- --check
+            cargo build --release --all-features --bin chunker
+            stat -c \"%n %s\" target/release/chunker > size-default.txt
           "
 
   build-release:
@@ -191,6 +193,12 @@ jobs:
 
             # Checksums for integrity verification
             (cd dist && sha256sum * > SHA256SUMS)
+
+            # Size report for regression tracking
+            stat -c \"%n %s\" dist/* > dist/SIZE.txt
+
+            # Compress artifacts (keep originals for convenience)
+            (cd dist && for f in *; do if [ -f \"$f\" ]; then zstd -19 --keep \"$f\"; fi; done)
             
             # 🔐 Sign Artifacts (using Cosign keyless / OIDC)
             # Note: In a real run, this requires ID_TOKEN permissions.

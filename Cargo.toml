@@ -16,10 +16,14 @@ keywords = ["nix", "nar", "hash", "sign", "compress", "chunk", "fastcdc", "rustl
 lto = true
 codegen-units = 1
 strip = true
+panic = "abort"
+debug = 0
 
 [profile.bench]
 lto = true
 codegen-units = 1
+panic = "abort"
+debug = 0
 
 [package.metadata.cargo-machete]
 ignored = ["bzip2", "serde", "serde_json"]
