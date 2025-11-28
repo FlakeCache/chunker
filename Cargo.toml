@@ -42,6 +42,7 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 rustler = { version = "0.37.0", optional = true }
 thiserror = "1.0"
+async-stream = "0.3"
 
 # Cryptography
 ed25519-dalek = { version = "2.2", features = ["rand_core", "fast", "batch", "zeroize"] }

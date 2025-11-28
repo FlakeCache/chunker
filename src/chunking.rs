@@ -3,6 +3,7 @@ use blake3;
 use bytes::{Bytes, BytesMut};
 use fastcdc::v2020::FastCDC;
 use metrics::{counter, histogram};
+use async_stream::try_stream;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -467,42 +468,33 @@ impl<R: Read> Iterator for ChunkStream<R> {
 ///
 /// This implementation uses a "slab" buffer strategy (`BytesMut`) to minimize memory allocations.
 #[cfg(feature = "async-stream")]
-pub struct ChunkStreamAsync<R: AsyncRead + Unpin> {
-    reader: R,
-    buffer: BytesMut,
-    min_size: usize,
-    avg_size: usize,
-    max_size: usize,
-    hash: HashAlgorithm,
-    position: u64,
-    eof: bool,
+pub struct ChunkStreamAsync<R> {
+    stream: Pin<Box<dyn Stream<Item = Result<ChunkMetadata, ChunkingError>> + Send>>,
+    _phantom: std::marker::PhantomData<R>,
 }
 
 #[cfg(feature = "async-stream")]
-impl<R: AsyncRead + Unpin> fmt::Debug for ChunkStreamAsync<R> {
+impl<R> fmt::Debug for ChunkStreamAsync<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ChunkStreamAsync")
-            .field("min_size", &self.min_size)
-            .field("avg_size", &self.avg_size)
-            .field("max_size", &self.max_size)
-            .field("hash", &self.hash)
-            .field("position", &self.position)
-            .field("eof", &self.eof)
-            .field("buffer_len", &self.buffer.len())
             .finish_non_exhaustive()
     }
 }
 
 #[cfg(feature = "async-stream")]
-impl<R: AsyncRead + Unpin> ChunkStreamAsync<R> {
+impl<R> Unpin for ChunkStreamAsync<R> {}
+
+#[cfg(feature = "async-stream")]
+impl<R: AsyncRead + Unpin + Send + 'static> ChunkStreamAsync<R> {
     /// Create a streaming chunker around any [`futures::io::AsyncRead`] implementation.
     pub fn new(reader: R, min_size: Option<usize>, avg_size: Option<usize>, max_size: Option<usize>) -> Self {
         Self::new_with_hash(reader, min_size, avg_size, max_size, HashAlgorithm::Sha256)
     }
 
     /// Create a streaming chunker with an explicit hash algorithm.
+    #[allow(clippy::too_many_lines)]
     pub fn new_with_hash(
-        reader: R,
+        mut reader: R,
         min_size: Option<usize>,
         avg_size: Option<usize>,
         max_size: Option<usize>,
@@ -521,153 +513,148 @@ impl<R: AsyncRead + Unpin> ChunkStreamAsync<R> {
         };
 
         let capacity = std::cmp::max(options.max_size * 2, 1024 * 1024);
-        let buffer = BytesMut::with_capacity(capacity);
+        let mut buffer = BytesMut::with_capacity(capacity);
+        let mut position = 0u64;
+        let mut eof = false;
+
+        let stream = try_stream! {
+            loop {
+                // 1. Try to find a chunk in the current buffer
+                if !buffer.is_empty() {
+                    let mut cdc = FastCDC::new(
+                        &buffer,
+                        options.min_size as u32,
+                        options.avg_size as u32,
+                        options.max_size as u32,
+                    );
+
+                    if let Some(chunk) = cdc.next() {
+                        let len = chunk.length;
+                        let offset = chunk.offset;
+
+                        if len == 0 {
+                            Err(ChunkingError::ZeroLengthChunk)?;
+                        }
+
+                        if offset != 0 {
+                            Err(std::io::Error::new(
+                                ErrorKind::InvalidData,
+                                format!("FastCDC returned non-zero offset {offset} for first chunk"),
+                            ))?;
+                        }
+
+                        if len > buffer.len() {
+                            Err(ChunkingError::Bounds {
+                                data_len: buffer.len(),
+                                offset: 0,
+                                length: len,
+                            })?;
+                        }
+
+                        if len != buffer.len() || eof || len >= options.max_size {
+                            let chunk_data = buffer.split_to(len).freeze();
+
+                            counter!("chunker.chunks_emitted").increment(1);
+                            counter!("chunker.bytes_processed").increment(len as u64);
+                            histogram!("chunker.chunk_size").record(len as f64);
+                            
+                            let hash_array: [u8; 32] = match hash {
+                                HashAlgorithm::Sha256 => {
+                                    let mut hasher = Sha256::new();
+                                    hasher.update(&chunk_data);
+                                    hasher.finalize().into()
+                                }
+                                HashAlgorithm::Blake3 => blake3::hash(&chunk_data).into(),
+                            };
+
+                            let chunk_offset = position;
+                            position += len as u64;
+
+                            if tracing::enabled!(tracing::Level::TRACE)
+                                && TRACE_SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed).is_multiple_of(TRACE_SAMPLE_EVERY)
+                            {
+                                trace!(offset = chunk_offset, length = len, "chunk_emitted");
+                            }
+
+                            yield ChunkMetadata {
+                                hash: hash_array,
+                                offset: chunk_offset,
+                                length: len,
+                                payload: chunk_data,
+                            };
+                            continue;
+                        }
+                    }
+                }
+
+                // 2. If no chunk found, or buffer empty, we need more data.
+                if eof {
+                    if buffer.is_empty() {
+                        break;
+                    }
+
+                    let len = buffer.len();
+                    let chunk_data = buffer.split_to(len).freeze();
+
+                    counter!("chunker.chunks_emitted").increment(1);
+                    counter!("chunker.bytes_processed").increment(len as u64);
+                    histogram!("chunker.chunk_size").record(len as f64);
+                    
+                    let hash_array: [u8; 32] = match hash {
+                        HashAlgorithm::Sha256 => {
+                            let mut hasher = Sha256::new();
+                            hasher.update(&chunk_data);
+                            hasher.finalize().into()
+                        }
+                        HashAlgorithm::Blake3 => blake3::hash(&chunk_data).into(),
+                    };
+
+                    let chunk_offset = position;
+                    position += len as u64;
+                    
+                    yield ChunkMetadata {
+                        hash: hash_array,
+                        offset: chunk_offset,
+                        length: len,
+                        payload: chunk_data,
+                    };
+                    continue;
+                }
+
+                // 3. Read more data
+                let read_size = std::cmp::max(options.max_size, 4096);
+                buffer.reserve(read_size);
+                let start = buffer.len();
+                buffer.resize(start + read_size, 0);
+                
+                match reader.read(&mut buffer[start..]).await {
+                    Ok(0) => {
+                        eof = true;
+                        buffer.truncate(start);
+                    }
+                    Ok(n) => {
+                        buffer.truncate(start + n);
+                    }
+                    Err(e) => {
+                        Err(ChunkingError::Io(e))?;
+                    }
+                }
+            }
+        };
 
         Self {
-            reader,
-            buffer,
-            min_size: options.min_size,
-            avg_size: options.avg_size,
-            max_size: options.max_size,
-            hash,
-            position: 0,
-            eof: false,
+            stream: Box::pin(stream),
+            _phantom: std::marker::PhantomData,
         }
     }
 }
 
 #[cfg(feature = "async-stream")]
-impl<R: AsyncRead + Unpin> Stream for ChunkStreamAsync<R> {
+impl<R> Stream for ChunkStreamAsync<R> {
     type Item = Result<ChunkMetadata, ChunkingError>;
 
-    #[allow(clippy::too_many_lines)]
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        loop {
-            // 1. Try to find a chunk in the current buffer
-            if !this.buffer.is_empty() {
-                let mut cdc = FastCDC::new(
-                    &this.buffer,
-                    this.min_size as u32,
-                    this.avg_size as u32,
-                    this.max_size as u32,
-                );
-
-                if let Some(chunk) = cdc.next() {
-                    let len = chunk.length;
-                    let offset = chunk.offset;
-
-                    if len == 0 {
-                        return Poll::Ready(Some(Err(ChunkingError::ZeroLengthChunk)));
-                    }
-
-                    if offset != 0 {
-                        return Poll::Ready(Some(Err(std::io::Error::new(
-                            ErrorKind::InvalidData,
-                            format!("FastCDC returned non-zero offset {offset} for first chunk"),
-                        ).into())));
-                    }
-
-                    if len > this.buffer.len() {
-                        return Poll::Ready(Some(Err(ChunkingError::Bounds {
-                            data_len: this.buffer.len(),
-                            offset: 0,
-                            length: len,
-                        })));
-                    }
-
-                    if len != this.buffer.len() || this.eof || len >= this.max_size {
-                        let chunk_data = this.buffer.split_to(len).freeze();
-
-                        counter!("chunker.chunks_emitted").increment(1);
-                        counter!("chunker.bytes_processed").increment(len as u64);
-                        histogram!("chunker.chunk_size").record(len as f64);
-                        
-                        let hash_array: [u8; 32] = match this.hash {
-                            HashAlgorithm::Sha256 => {
-                                let mut hasher = Sha256::new();
-                                hasher.update(&chunk_data);
-                                hasher.finalize().into()
-                            }
-                            HashAlgorithm::Blake3 => blake3::hash(&chunk_data).into(),
-                        };
-
-                        let chunk_offset = this.position;
-                        this.position += len as u64;
-
-                        if tracing::enabled!(tracing::Level::TRACE)
-                            && TRACE_SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed).is_multiple_of(TRACE_SAMPLE_EVERY)
-                        {
-                            trace!(offset = chunk_offset, length = len, "chunk_emitted");
-                        }
-
-                        return Poll::Ready(Some(Ok(ChunkMetadata {
-                            hash: hash_array,
-                            offset: chunk_offset,
-                            length: len,
-                            payload: chunk_data,
-                        })));
-                    }
-                }
-            }
-
-            // 2. If no chunk found, or buffer empty, we need more data.
-            if this.eof {
-                if this.buffer.is_empty() {
-                    return Poll::Ready(None);
-                }
-
-                let len = this.buffer.len();
-                let chunk_data = this.buffer.split_to(len).freeze();
-
-                counter!("chunker.chunks_emitted").increment(1);
-                counter!("chunker.bytes_processed").increment(len as u64);
-                histogram!("chunker.chunk_size").record(len as f64);
-                
-                let hash_array: [u8; 32] = match this.hash {
-                    HashAlgorithm::Sha256 => {
-                        let mut hasher = Sha256::new();
-                        hasher.update(&chunk_data);
-                        hasher.finalize().into()
-                    }
-                    HashAlgorithm::Blake3 => blake3::hash(&chunk_data).into(),
-                };
-
-                let chunk_offset = this.position;
-                this.position += len as u64;
-                
-                return Poll::Ready(Some(Ok(ChunkMetadata {
-                    hash: hash_array,
-                    offset: chunk_offset,
-                    length: len,
-                    payload: chunk_data,
-                })));
-            }
-
-            // 3. Read more data
-            let read_size = std::cmp::max(this.max_size, 4096);
-            this.buffer.reserve(read_size);
-            let start = this.buffer.len();
-            this.buffer.resize(start + read_size, 0);
-            
-            let reader = Pin::new(&mut this.reader);
-            match reader.poll_read(cx, &mut this.buffer[start..]) {
-                Poll::Ready(Ok(0)) => {
-                    this.eof = true;
-                    this.buffer.truncate(start);
-                }
-                Poll::Ready(Ok(n)) => {
-                    this.buffer.truncate(start + n);
-                }
-                Poll::Ready(Err(e)) => {
-                    return Poll::Ready(Some(Err(ChunkingError::Io(e))));
-                }
-                Poll::Pending => {
-                    this.buffer.truncate(start); // Undo resize
-                    return Poll::Pending;
-                }
-            }
-        }
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.as_mut().get_mut().stream.as_mut().poll_next(cx)
     }
 }
 
@@ -714,7 +701,7 @@ impl<R: AsyncRead + Unpin> Read for BlockingAsyncReadAdapter<R> {
 ///
 /// Returns `ChunkingError` if reading from the stream fails or if chunking parameters are invalid.
 #[cfg(feature = "async-stream")]
-pub async fn chunk_data_async<R: AsyncRead + Unpin>(
+pub async fn chunk_data_async<R: AsyncRead + Unpin + Send + 'static>(
     reader: R,
     min_size: Option<usize>,
     avg_size: Option<usize>,
@@ -774,7 +761,7 @@ pub fn chunk_stream_blocking_adapter<R: AsyncRead + Unpin>(
 ///
 /// Returns `ChunkingError` if reading from the stream fails or if chunking parameters are invalid.
 #[cfg(feature = "async-stream")]
-pub async fn chunk_stream_async<R: AsyncRead + Unpin>(
+pub async fn chunk_stream_async<R: AsyncRead + Unpin + Send + 'static>(
     reader: R,
     min_size: Option<usize>,
     avg_size: Option<usize>,
