@@ -8,6 +8,7 @@ use async_stream::try_stream;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::env;
 use std::fmt;
 use std::io::{ErrorKind, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -248,9 +249,32 @@ pub struct ChunkStream<R: Read> {
 
 static TRACE_SAMPLE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const TRACE_SAMPLE_EVERY: u64 = 1024;
-const READ_SLICE_CAP: usize = 16 * 1024 * 1024; // 16 MiB per read to avoid oversized allocations
+const DEFAULT_READ_SLICE_CAP: usize = 16 * 1024 * 1024; // 16 MiB per read to avoid oversized allocations
+const MAX_READ_SLICE_CAP: usize = 256 * 1024 * 1024; // 256 MiB hard ceiling
+const MIN_READ_SLICE_CAP: usize = 4096;
 #[cfg(feature = "async-stream")]
-const ASYNC_BUFFER_LIMIT: usize = 512 * 1024 * 1024; // 512 MiB safety cap
+const DEFAULT_ASYNC_BUFFER_LIMIT: usize = 2 * 1024 * 1024 * 1024; // 2 GiB safety cap, overridable for binary caches
+#[cfg(feature = "async-stream")]
+const MAX_ASYNC_BUFFER_LIMIT: usize = 3 * 1024 * 1024 * 1024; // upper clamp to avoid runaway allocations
+#[cfg(feature = "async-stream")]
+const MIN_ASYNC_BUFFER_LIMIT: usize = 64 * 1024 * 1024; // 64 MiB minimum to keep streaming efficient
+
+fn effective_read_slice_cap() -> usize {
+    let from_env = env::var("CHUNKER_READ_SLICE_CAP_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok());
+    let cap = from_env.unwrap_or(DEFAULT_READ_SLICE_CAP);
+    cap.clamp(MIN_READ_SLICE_CAP, MAX_READ_SLICE_CAP)
+}
+
+#[cfg(feature = "async-stream")]
+fn effective_async_buffer_limit() -> usize {
+    let from_env = env::var("CHUNKER_ASYNC_BUFFER_LIMIT_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok());
+    let cap = from_env.unwrap_or(DEFAULT_ASYNC_BUFFER_LIMIT);
+    cap.clamp(MIN_ASYNC_BUFFER_LIMIT, MAX_ASYNC_BUFFER_LIMIT)
+}
 
 impl<R: Read> fmt::Debug for ChunkStream<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -427,7 +451,8 @@ impl<R: Read> Iterator for ChunkStream<R> {
             }
 
             // 3. Read more data (cap per-read to avoid huge allocations)
-            let read_size = std::cmp::max(std::cmp::min(self.max_size, READ_SLICE_CAP), 4096);
+            let slice_cap = effective_read_slice_cap();
+            let read_size = std::cmp::max(std::cmp::min(self.max_size, slice_cap), MIN_READ_SLICE_CAP);
             
             // Reserve space
             self.buffer.reserve(read_size);
@@ -618,7 +643,8 @@ impl<R: AsyncRead + Unpin + Send + 'static> ChunkStreamAsync<R> {
                 }
 
                 // 3. Read more data (cap per-read to avoid huge allocations)
-                let read_size = std::cmp::max(std::cmp::min(options.max_size, READ_SLICE_CAP), 4096);
+                let slice_cap = effective_read_slice_cap();
+                let read_size = std::cmp::max(std::cmp::min(options.max_size, slice_cap), MIN_READ_SLICE_CAP);
                 buffer.reserve(read_size);
                 let start = buffer.len();
                 buffer.resize(start + read_size, 0);
@@ -691,7 +717,7 @@ impl<R: AsyncRead + Unpin> Read for BlockingAsyncReadAdapter<R> {
 /// This function collects all chunks into a `Vec`, which means the entire payload
 /// will eventually reside in memory. To avoid OOM on large files, use [`ChunkStreamAsync`] directly.
 ///
-/// This function enforces `ASYNC_BUFFER_LIMIT` on the total accumulated payload size.
+    /// This function enforces a buffer limit on the total accumulated payload size.
 ///
 /// # Errors
 ///
@@ -703,6 +729,7 @@ pub async fn chunk_data_async<R: AsyncRead + Unpin + Send + 'static>(
     avg_size: Option<usize>,
     max_size: Option<usize>,
 ) -> Result<Vec<ChunkMetadata>, ChunkingError> {
+    let buffer_limit = effective_async_buffer_limit();
     let mut stream = ChunkStreamAsync::new(reader, min_size, avg_size, max_size)?;
     let mut chunks = Vec::new();
     let mut total_len = 0;
@@ -711,7 +738,7 @@ pub async fn chunk_data_async<R: AsyncRead + Unpin + Send + 'static>(
         let chunk = chunk_res?;
         total_len += chunk.length;
         
-        if total_len > ASYNC_BUFFER_LIMIT {
+        if total_len > buffer_limit {
             return Err(ChunkingError::Io(std::io::Error::new(
                 ErrorKind::OutOfMemory,
                 "chunk_data_async buffer limit exceeded",
