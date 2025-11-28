@@ -1,3 +1,7 @@
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
+#![allow(clippy::panic)]
+
 use chunker::{chunking::ChunkStream, compression::compress_zstd, hashing::sha256_hash};
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use fastcdc::v2020::FastCDC;
