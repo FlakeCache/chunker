@@ -10,10 +10,31 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  tests:
+    name: Test & Clippy (native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Run tests and clippy
+        run: |
+          nix develop .#default --command bash -c "
+            cargo test --all --release
+            cargo clippy --all-features --all-targets -- -D warnings
+          "
+
   build-release:
     name: Build ${{ matrix.variant }}
-    # User requested "my runners" (self-hosted) for everything.
-    runs-on: self-hosted
+    needs: tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       matrix:
         include:
@@ -148,7 +169,7 @@ jobs:
             
             # Copy Loader
             if [ '${{ matrix.build_loader }}' = 'true' ]; then
-              cp \$SRC_DIR/loader\$EXT dist/chunker\$EXT
+              cp \$SRC_DIR/loader\$EXT dist/chunker-loader-${{ matrix.suffix }}\$EXT
             fi
             
             # 🛡️ Generate SBOM (Software Bill of Materials)
