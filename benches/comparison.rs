@@ -39,13 +39,13 @@ fn benchmark_compression(c: &mut Criterion) {
     let _ = group.bench_function("zstd_level_3", |b| {
         b.iter(|| {
             let _ = black_box(compression::compress_zstd(black_box(&data), Some(3)));
-        })
+        });
     });
 
     let _ = group.bench_function("lz4", |b| {
         b.iter(|| {
             let _ = black_box(compression::compress_lz4(black_box(&data)));
-        })
+        });
     });
 
     group.finish();
