@@ -921,7 +921,7 @@ mod tests {
         let cursor = Cursor::new(&data);
         let reader = BufReader::new(cursor);
 
-        let mut stream =
+        let stream =
             ChunkStream::new(reader, Some(16 * 1024), Some(32 * 1024), Some(64 * 1024))?;
         let mut total = 0_usize;
         let mut count = 0_usize;
