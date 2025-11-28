@@ -34,7 +34,7 @@ cargo build --release # optimized
 ```
 
 ## Async notes
-- `chunk_data_async` enforces a 512 MiB buffer cap; reject larger streams to avoid OOM.
+- `chunk_data_async` collects chunk metadata in memory and enforces a buffer cap (default 2 GiB, tunable via `CHUNKER_ASYNC_BUFFER_LIMIT_BYTES`, clamped to 64 MiB–3 GiB). For very large inputs, prefer streaming chunkers.
 - `chunk_stream_blocking` bridges async readers via blocking reads; call from a blocking task.
 - `chunk_stream_async` offloads the blocking work to a thread so it won’t stall your async runtime.
 

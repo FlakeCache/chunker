@@ -12,6 +12,7 @@ use std::env;
 use std::fmt;
 use std::io::{ErrorKind, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::VecDeque;
 use tracing::{debug, instrument, trace};
 #[cfg(feature = "async-stream")]
 use futures::io::AsyncRead;
@@ -44,6 +45,8 @@ pub enum ChunkingError {
     ZeroLengthChunk,
     #[error("invalid_chunking_options: {0}")]
     InvalidOptions(String),
+    #[error("buffer_limit_exceeded: attempted {attempted} bytes, limit {limit} bytes")]
+    BufferLimitExceeded { attempted: usize, limit: usize },
 }
 
 /// Hash algorithm used when producing chunk metadata.
@@ -245,6 +248,7 @@ pub struct ChunkStream<R: Read> {
     hash: HashAlgorithm,
     position: u64,
     eof: bool,
+    pending_chunks: VecDeque<Result<ChunkMetadata, ChunkingError>>,
 }
 
 static TRACE_SAMPLE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -329,6 +333,7 @@ impl<R: Read> ChunkStream<R> {
             hash,
             position: 0,
             eof: false,
+            pending_chunks: VecDeque::new(),
         })
     }
 }
@@ -338,19 +343,26 @@ impl<R: Read> Iterator for ChunkStream<R> {
 
     #[allow(clippy::too_many_lines)]
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(chunk) = self.pending_chunks.pop_front() {
+            return Some(chunk);
+        }
+
         loop {
-            // 1. Try to find a chunk in the current buffer
+            // 1. Try to find chunks in the current buffer
             if !self.buffer.is_empty() {
                 // Create a FastCDC iterator over the buffer
-                let mut cdc = FastCDC::new(
+                let cdc = FastCDC::new(
                     &self.buffer,
                     self.min_size as u32,
                     self.avg_size as u32,
                     self.max_size as u32,
                 );
 
-                if let Some(chunk) = cdc.next() {
-                    // Found a chunk!
+                // Collect all valid cut points in the current buffer
+                let mut cut_points = Vec::new();
+                let mut total_len = 0;
+
+                for chunk in cdc {
                     let len = chunk.length;
                     let offset = chunk.offset;
 
@@ -360,57 +372,103 @@ impl<R: Read> Iterator for ChunkStream<R> {
                     }
 
                     // Safety check: FastCDC should start at 0 for the first chunk in the slice
-                    if offset != 0 {
+                    // Subsequent chunks will have offset > 0 relative to the start of the buffer
+                    if cut_points.is_empty() && offset != 0 {
                         return Some(Err(std::io::Error::new(
                             ErrorKind::InvalidData,
                             format!("FastCDC returned non-zero offset {offset} for first chunk"),
                         ).into()));
                     }
 
-                    // Safety check: Ensure we don't panic on split_to
-                    if len > self.buffer.len() {
-                        return Some(Err(ChunkingError::Bounds {
-                            data_len: self.buffer.len(),
-                            offset: 0,
-                            length: len,
-                        }));
+                    // Check if this chunk is "complete"
+                    // If it touches the end of the buffer, and we are not at EOF, and it's smaller than max_size,
+                    // it might be a partial chunk (FastCDC didn't find a cut point yet).
+                    let touches_end = offset + len == self.buffer.len();
+                    if touches_end && !self.eof && len < self.max_size {
+                        break;
                     }
 
-                    // If FastCDC consumed the whole buffer but we're not at EOF and haven't reached max_size,
-                    // it means we likely haven't found a true cut point yet. We should read more data.
-                    if len != self.buffer.len() || self.eof || len >= self.max_size {
-                        let chunk_data = self.buffer.split_to(len).freeze();
+                    cut_points.push(chunk);
+                    total_len += len;
+                }
 
-                        // Metrics
-                        counter!("chunker.chunks_emitted").increment(1);
-                        counter!("chunker.bytes_processed").increment(len as u64);
-                        histogram!("chunker.chunk_size").record(len as f64);
-                        
-                        let hash_array: [u8; 32] = match self.hash {
-                            HashAlgorithm::Sha256 => {
-                                let mut hasher = Sha256::new();
-                                hasher.update(&chunk_data);
-                                hasher.finalize().into()
+                if !cut_points.is_empty() {
+                    // Extract the data for all valid chunks at once
+                    // This advances the buffer by total_len
+                    let batch_data = self.buffer.split_to(total_len).freeze();
+
+                    // Process chunks in parallel (hashing)
+                    // We map the cut points to ChunkMetadata
+                    let current_position = self.position;
+                    let hash_algo = self.hash;
+
+                    let chunks: Vec<Result<ChunkMetadata, ChunkingError>> = cut_points
+                        .par_iter()
+                        .map(|chunk| {
+                            let len = chunk.length;
+                            // The offset in `batch_data` is relative to the start of the batch.
+                            // Since we collected chunks sequentially from the start of the buffer,
+                            // and `batch_data` corresponds exactly to `total_len`,
+                            // the offset of chunk[i] in `batch_data` is the sum of lengths of chunks[0..i].
+                            // However, FastCDC returns offsets relative to the input slice.
+                            // Since we passed `&self.buffer`, the offsets are correct relative to `batch_data`.
+                            let offset = chunk.offset;
+
+                            if offset + len > batch_data.len() {
+                                return Err(ChunkingError::Bounds {
+                                    data_len: batch_data.len(),
+                                    offset,
+                                    length: len,
+                                });
                             }
-                            HashAlgorithm::Blake3 => blake3::hash(&chunk_data).into(),
-                        };
 
-                        let chunk_offset = self.position;
-                        self.position += len as u64;
+                            let chunk_slice = batch_data.slice(offset..offset + len);
 
-                        if tracing::enabled!(tracing::Level::TRACE)
-                            && TRACE_SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed).is_multiple_of(TRACE_SAMPLE_EVERY)
-                        {
-                            trace!(offset = chunk_offset, length = len, "chunk_emitted");
-                        }
+                            // Metrics (thread-safe)
+                            counter!("chunker.chunks_emitted").increment(1);
+                            counter!("chunker.bytes_processed").increment(len as u64);
+                            histogram!("chunker.chunk_size").record(len as f64);
 
-                        return Some(Ok(ChunkMetadata {
-                            hash: hash_array,
-                            offset: chunk_offset,
-                            length: len,
-                            payload: chunk_data,
-                        }));
-                    }
+                            let hash_array: [u8; 32] = match hash_algo {
+                                HashAlgorithm::Sha256 => {
+                                    let mut hasher = Sha256::new();
+                                    hasher.update(&chunk_slice);
+                                    hasher.finalize().into()
+                                }
+                                HashAlgorithm::Blake3 => blake3::hash(&chunk_slice).into(),
+                            };
+
+                            // Calculate absolute offset
+                            // We need to know the cumulative length of previous chunks in this batch
+                            // But we can't easily share mutable state in par_iter.
+                            // Instead, we can calculate it after collecting, or pass it in?
+                            // Wait, `chunk.offset` is relative to the start of the batch.
+                            // So `current_position + chunk.offset` is the absolute offset.
+                            let chunk_offset = current_position + offset as u64;
+
+                            if tracing::enabled!(tracing::Level::TRACE)
+                                && TRACE_SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed).is_multiple_of(TRACE_SAMPLE_EVERY)
+                            {
+                                trace!(offset = chunk_offset, length = len, "chunk_emitted");
+                            }
+
+                            Ok(ChunkMetadata {
+                                hash: hash_array,
+                                offset: chunk_offset,
+                                length: len,
+                                payload: chunk_slice,
+                            })
+                        })
+                        .collect();
+
+                    // Update position
+                    self.position += total_len as u64;
+
+                    // Push to pending queue
+                    self.pending_chunks.extend(chunks);
+
+                    // Return the first one immediately
+                    return self.pending_chunks.pop_front();
                 }
             }
 
@@ -451,8 +509,10 @@ impl<R: Read> Iterator for ChunkStream<R> {
             }
 
             // 3. Read more data (cap per-read to avoid huge allocations)
+            // We increase the read size to encourage batching (e.g. 8x max_size)
             let slice_cap = effective_read_slice_cap();
-            let read_size = std::cmp::max(std::cmp::min(self.max_size, slice_cap), MIN_READ_SLICE_CAP);
+            let target_read = std::cmp::max(self.max_size * 8, 4 * 1024 * 1024); 
+            let read_size = std::cmp::max(std::cmp::min(target_read, slice_cap), MIN_READ_SLICE_CAP);
             
             // Reserve space
             self.buffer.reserve(read_size);
@@ -728,7 +788,7 @@ pub async fn chunk_data_async<R: AsyncRead + Unpin + Send + 'static>(
     min_size: Option<usize>,
     avg_size: Option<usize>,
     max_size: Option<usize>,
-) -> Result<Vec<ChunkMetadata>, ChunkingError> {
+    ) -> Result<Vec<ChunkMetadata>, ChunkingError> {
     let buffer_limit = effective_async_buffer_limit();
     let mut stream = ChunkStreamAsync::new(reader, min_size, avg_size, max_size)?;
     let mut chunks = Vec::new();
@@ -739,10 +799,10 @@ pub async fn chunk_data_async<R: AsyncRead + Unpin + Send + 'static>(
         total_len += chunk.length;
         
         if total_len > buffer_limit {
-            return Err(ChunkingError::Io(std::io::Error::new(
-                ErrorKind::OutOfMemory,
-                "chunk_data_async buffer limit exceeded",
-            )));
+            return Err(ChunkingError::BufferLimitExceeded {
+                attempted: total_len,
+                limit: buffer_limit,
+            });
         }
         
         chunks.push(chunk);

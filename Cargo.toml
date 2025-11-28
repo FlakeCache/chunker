@@ -22,7 +22,6 @@ debug = 0
 [profile.bench]
 lto = true
 codegen-units = 1
-panic = "abort"
 debug = 0
 
 [package.metadata.cargo-machete]
