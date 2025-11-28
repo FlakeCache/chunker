@@ -2,7 +2,7 @@
 name = "chunker"
 version = "0.1.0-beta1"
 authors = ["FlakeCache Team"]
-edition = "2021"
+edition = "2024"
 publish = false
 description = "High-performance content-defined chunking for Nix NARs (Rustler NIF + standalone library)"
 repository = "https://github.com/FlakeCache/chunker"
