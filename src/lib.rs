@@ -1,17 +1,36 @@
 //! # Chunker
 //!
-//! High-performance content-defined chunking (FastCDC) for Nix NARs.
+//! High-performance content-defined chunking (`FastCDC`) for Nix NARs.
 //!
-//! This library provides:
-//! - **FastCDC** content-defined chunking algorithm
+//! This crate provides:
+//! - **`FastCDC`** content-defined chunking algorithm
 //! - **Compression** codecs (zstd, xz, bzip2)
 //! - **Cryptographic signing** (Ed25519)
 //! - **Hash computation** (SHA256, Nix base32)
 //!
-//! ## Observability
+//! ## Observability & Telemetry
 //!
-//! This crate uses the [`tracing`](https://docs.rs/tracing) crate for instrumentation.
-//! Applications can enable logging by initializing a subscriber (e.g., `tracing-subscriber`).
+//! This crate uses the [`tracing`](https://docs.rs/tracing) ecosystem, making it **Telemetry Ready**.
+//!
+//! ### Rust Applications
+//! You can export traces to **Jaeger**, **Datadog**, or **Honeycomb** by installing an OpenTelemetry subscriber in your application binary:
+//!
+//! ```rust,ignore
+//! // In your main.rs
+//! use tracing_subscriber::prelude::*;
+//!
+//! let tracer = opentelemetry_jaeger::new_pipeline()
+//!     .with_service_name("chunker")
+//!     .install_simple()
+//!     .unwrap();
+//!
+//! let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+//! tracing_subscriber::registry().with(telemetry).init();
+//! ```
+//!
+//! ### Elixir Applications
+//! The NIF exposes `enable_logging/1` for runtime debugging. For full distributed tracing,
+//! you can initialize a Rust-side OpenTelemetry subscriber that correlates with your Elixir traces.
 //!
 //! ## Example
 //!
@@ -27,12 +46,19 @@
 //!
 //! When compiled with the `nif` feature, provides Rustler NIF bindings for Elixir.
 
+#[cfg(all(feature = "nif", feature = "telemetry"))]
+compile_error!(
+    "The 'nif' and 'telemetry' features are mutually exclusive. \
+    Enabling 'telemetry' (Tokio runtime) inside a NIF is unsafe and can crash the Erlang VM. \
+    Use standard logging for NIFs instead."
+);
+
 pub mod chunking;
 pub mod compression;
 pub mod hashing;
 pub mod signing;
 
-pub use chunking::{ChunkMetadata, ChunkStream, ChunkingOptions};
+pub use chunking::{ChunkMetadata, ChunkStream, ChunkingOptions, HashAlgorithm};
 
 #[cfg(feature = "nif")]
 pub mod nif;

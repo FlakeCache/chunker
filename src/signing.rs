@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
+use zeroize::Zeroize;
 
 #[derive(Debug, thiserror::Error, Clone, Copy)]
 pub enum SigningError {
@@ -18,6 +19,7 @@ pub enum SigningError {
 
 /// Generate a new Ed25519 keypair
 /// Returns: {:ok, {`secret_key_base64`, `public_key_base64`}}
+#[must_use]
 pub fn generate_keypair() -> (String, String) {
     let mut csprng = OsRng;
     let signing_key = SigningKey::generate(&mut csprng);
@@ -32,20 +34,30 @@ pub fn generate_keypair() -> (String, String) {
 /// Sign data with Ed25519 secret key
 /// Args: data (binary), `secret_key` (base64 string)
 /// Returns: {:ok, `signature_base64`} or {:error, reason}
+///
+/// # Errors
+///
+/// Returns `SigningError` if the secret key is invalid or decoding fails.
 pub fn sign_data(data: &[u8], secret_key_b64: &str) -> Result<String, SigningError> {
     // Decode secret key with strict base64 validation
-    let secret_bytes = BASE64
+    let mut secret_bytes = BASE64
         .decode(secret_key_b64)
         .map_err(|_| SigningError::DecodeError)?;
 
     if secret_bytes.len() != 32 {
+        secret_bytes.zeroize();
         return Err(SigningError::InvalidSecretKey);
     }
 
     let mut key_bytes = [0u8; 32];
     key_bytes.copy_from_slice(&secret_bytes);
+    // Zeroize the heap-allocated vector immediately after copying
+    secret_bytes.zeroize();
 
     let signing_key = SigningKey::from_bytes(&key_bytes);
+    // Zeroize the stack-allocated array
+    key_bytes.zeroize();
+
     let signature = signing_key.sign(data);
 
     Ok(BASE64.encode(signature.to_bytes().as_ref()))
@@ -54,6 +66,10 @@ pub fn sign_data(data: &[u8], secret_key_b64: &str) -> Result<String, SigningErr
 /// Verify Ed25519 signature
 /// Args: data (binary), signature (base64), `public_key` (base64)
 /// Returns: :ok or {:error, `:invalid_signature`}
+///
+/// # Errors
+///
+/// Returns `SigningError` if the signature or public key is invalid, or if verification fails.
 pub fn verify_signature(
     data: &[u8],
     signature_b64: &str,

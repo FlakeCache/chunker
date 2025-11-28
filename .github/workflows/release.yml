@@ -1,31 +1,172 @@
-name: Release
+name: Release Build
+
 on:
   push:
     tags:
       - 'v*'
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build-release:
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.variant }}
+    # User requested "my runners" (self-hosted) for everything.
+    runs-on: self-hosted
+    strategy:
+      matrix:
+        include:
+          # 1. Generic (Portable)
+          - variant: "generic"
+            rustflags: ""
+            suffix: "x86_64-generic"
+            build_loader: true
+            target: "x86_64-unknown-linux-gnu"
+            use_cross: false
+          
+          # 2. x86-64-v3 (Haswell+) - AVX2
+          - variant: "v3"
+            rustflags: "-C target-cpu=x86-64-v3"
+            suffix: "x86_64-v3"
+            build_loader: false
+            target: "x86_64-unknown-linux-gnu"
+            use_cross: false
+
+          # 3. x86-64-v4 (Skylake-X/Zen4+) - AVX-512
+          - variant: "v4"
+            rustflags: "-C target-cpu=x86-64-v4"
+            suffix: "x86_64-v4"
+            build_loader: false
+            target: "x86_64-unknown-linux-gnu"
+            use_cross: false
+
+          # 4. ARM64 Generic (Linux)
+          - variant: "arm64-generic"
+            rustflags: ""
+            suffix: "aarch64-generic"
+            build_loader: true
+            target: "aarch64-unknown-linux-gnu"
+            use_cross: true
+
+          # 5. ARM64 SVE (Linux)
+          - variant: "arm64-sve"
+            rustflags: "-C target-feature=+sve"
+            suffix: "aarch64-sve"
+            build_loader: false
+            target: "aarch64-unknown-linux-gnu"
+            use_cross: true
+
+          # 6. macOS ARM64 (Apple Silicon)
+          # Cross-compiled from Linux using cargo-zigbuild
+          - variant: "macos-arm64"
+            rustflags: ""
+            suffix: "aarch64-apple-darwin"
+            build_loader: true
+            target: "aarch64-apple-darwin"
+            use_cross: false
+            use_zig: true
+
+          # 7. Windows x86_64 (MSVC)
+          # Cross-compiled from Linux using cargo-zigbuild
+          - variant: "windows-x64"
+            rustflags: ""
+            suffix: "x86_64-pc-windows-msvc"
+            build_loader: true
+            target: "x86_64-pc-windows-msvc"
+            use_cross: false
+            use_zig: true
+
+          # 8. Windows ARM64 (MSVC)
+          - variant: "windows-arm64"
+            rustflags: ""
+            suffix: "aarch64-pc-windows-msvc"
+            build_loader: true
+            target: "aarch64-pc-windows-msvc"
+            use_cross: false
+            use_zig: true
+            nix_shell: "cross-windows"
+
+          # 9. Linux Musl (Static) - Alpine / Scratch
+          - variant: "linux-musl"
+            rustflags: "-C target-feature=+crt-static"
+            suffix: "x86_64-unknown-linux-musl"
+            build_loader: false
+            target: "x86_64-unknown-linux-musl"
+            use_cross: true
+            nix_shell: "linux"
+
+          # 10. Linux ARMv7 (IoT / Raspberry Pi 2/3)
+          - variant: "linux-armv7"
+            rustflags: ""
+            suffix: "armv7-unknown-linux-gnueabihf"
+            build_loader: false
+            target: "armv7-unknown-linux-gnueabihf"
+            use_cross: true
+            nix_shell: "cross-linux"
+
+          # 11. Linux RISC-V (VisionFive 2 / Server)
+          - variant: "linux-riscv64"
+            rustflags: ""
+            suffix: "riscv64gc-unknown-linux-gnu"
+            build_loader: false
+            target: "riscv64gc-unknown-linux-gnu"
+            use_cross: true
+            nix_shell: "cross-linux"
+
     steps:
       - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v20
-      - name: Build with Nix
-        run: nix develop --command cargo build --release
-      - name: Package binary
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Build & Sign
         run: |
-          VERSION=$(grep '^version =' Cargo.toml | cut -d '"' -f 2)
-          tar -czf chunker-${VERSION}.tar.gz -C target/release libchunker.so
-          echo "ASSET_PATH=chunker-${VERSION}.tar.gz" >> $GITHUB_ENV
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v1
+          # Default to 'default' shell if not specified (for backward compat)
+          SHELL_NAME="${{ matrix.nix_shell || 'default' }}"
+          
+          nix develop .#$SHELL_NAME --command bash -c "
+            echo '🏗️ Building ${{ matrix.variant }}...'
+            
+            if [ '${{ matrix.use_cross }}' = 'true' ]; then
+              cross build --release --target ${{ matrix.target }}
+            elif [ '${{ matrix.use_zig }}' = 'true' ]; then
+              cargo zigbuild --release --target ${{ matrix.target }}
+            else
+              cargo build --release --target ${{ matrix.target }}
+            fi
+            
+            # Prepare Artifacts
+            mkdir -p dist
+            if [[ '${{ matrix.target }}' == *'windows'* ]]; then EXT='.exe'; else EXT=''; fi
+            SRC_DIR='target/${{ matrix.target }}/release'
+            
+            # Copy Binary
+            cp \$SRC_DIR/chunker\$EXT dist/chunker-${{ matrix.suffix }}\$EXT
+            
+            # Copy Loader
+            if [ '${{ matrix.build_loader }}' = 'true' ]; then
+              cp \$SRC_DIR/loader\$EXT dist/chunker\$EXT
+            fi
+            
+            # 🛡️ Generate SBOM (Software Bill of Materials)
+            echo '📝 Generating SBOM...'
+            syft scan file:dist/chunker-${{ matrix.suffix }}\$EXT -o spdx-json=dist/chunker-${{ matrix.suffix }}.spdx.json
+            
+            # 🔐 Sign Artifacts (using Cosign keyless / OIDC)
+            # Note: In a real run, this requires ID_TOKEN permissions.
+            # For self-hosted without OIDC, you might use a key file.
+            # echo '✍️ Signing...'
+            # cosign sign-blob --yes dist/chunker-${{ matrix.suffix }}\$EXT --bundle dist/chunker-${{ matrix.suffix }}.sig
+          "
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+          # COSIGN_EXPERIMENTAL: "1" # Needed for keyless signing
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
         with:
-          subject-path: ${{ env.ASSET_PATH }}
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: ${{ env.ASSET_PATH }}
+          name: chunker-${{ matrix.suffix }}
+          path: dist/

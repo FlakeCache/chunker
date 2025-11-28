@@ -1,5 +1,7 @@
 //! Rustler NIF bindings for Elixir.
-//! Enable via the `nif` feature to build the cdylib for Elixir integration.
+//! Enable via the `nif` feature to build the cdylib for Elixir.
+
+#![allow(clippy::option_if_let_else)]
 
 use rustler::types::binary::OwnedBinary;
 use rustler::{Binary, Env, NifResult};
@@ -24,31 +26,32 @@ mod atoms {
         xz_decompression_failed,
         chunk_bounds_invalid,
         io_error,
+        logging_init_failed,
+        zero_length_chunk,
+        invalid_chunking_options,
     }
 }
 
 // Rustler NIF module initialization
-rustler::init!(
-    "Elixir.FlakecacheApp.Native.Chunker",
-    [
-        generate_keypair,
-        sign_data,
-        verify_signature,
-        sha256_hash,
-        nix_base32_encode,
-        nix_base32_decode,
-        compress_zstd,
-        decompress_zstd,
-        compress_xz,
-        decompress_xz,
-        chunk_data,
-        chunk_data_streaming
-    ]
-);
-fn binary_from_vec<'a>(env: Env<'a>, data: Vec<u8>) -> NifResult<Binary<'a>> {
+rustler::init!("Elixir.FlakecacheApp.Native.Chunker");
+
+#[rustler::nif]
+fn enable_logging(level: String) -> NifResult<rustler::Atom> {
+    let filter = tracing_subscriber::EnvFilter::new(level);
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .finish();
+
+    match tracing::subscriber::set_global_default(subscriber) {
+        Ok(()) => Ok(atoms::ok()),
+        Err(_) => Err(rustler::error::Error::Term(Box::new(atoms::logging_init_failed()))),
+    }
+}
+
+fn binary_from_vec<'a>(env: Env<'a>, data: &[u8]) -> NifResult<Binary<'a>> {
     let mut owned = OwnedBinary::new(data.len())
         .ok_or_else(|| rustler::error::Error::RaiseTerm(Box::new("alloc_failed")))?;
-    owned.as_mut_slice().copy_from_slice(&data);
+    owned.as_mut_slice().copy_from_slice(data);
     Ok(owned.release(env))
 }
 
@@ -88,7 +91,7 @@ fn verify_signature<'a>(
 ) -> NifResult<rustler::Atom> {
     let _ = env;
     match signing::verify_signature(data.as_slice(), signature_b64, public_key_b64) {
-        Ok(_) => Ok(atoms::ok()),
+        Ok(()) => Ok(atoms::ok()),
         Err(signing::SigningError::InvalidPublicKey) => Err(rustler::error::Error::Term(Box::new(
             atoms::invalid_public_key(),
         ))),
@@ -126,7 +129,7 @@ fn nix_base32_encode<'a>(env: Env<'a>, data: Binary<'a>) -> NifResult<String> {
 #[rustler::nif]
 fn nix_base32_decode<'a>(env: Env<'a>, encoded: &str) -> NifResult<Binary<'a>> {
     match hashing::nix_base32_decode(encoded) {
-        Ok(decoded) => binary_from_vec(env, decoded),
+        Ok(decoded) => binary_from_vec(env, &decoded),
         Err(_) => Err(rustler::error::Error::Term(Box::new(
             atoms::invalid_base32(),
         ))),
@@ -137,40 +140,43 @@ fn nix_base32_decode<'a>(env: Env<'a>, encoded: &str) -> NifResult<Binary<'a>> {
 // Compression Functions (zstd, xz)
 // =============================================================================
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn compress_zstd<'a>(env: Env<'a>, data: Binary<'a>, level: Option<i32>) -> NifResult<Binary<'a>> {
     match compression::compress_zstd(data.as_slice(), level) {
-        Ok(compressed) => binary_from_vec(env, compressed),
+        Ok(compressed) => binary_from_vec(env, &compressed),
         Err(_) => Err(rustler::error::Error::Term(Box::new(
             atoms::zstd_compression_failed(),
         ))),
     }
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn decompress_zstd<'a>(env: Env<'a>, data: Binary<'a>) -> NifResult<Binary<'a>> {
-    match compression::decompress_zstd(data.as_slice()) {
-        Ok(decompressed) => binary_from_vec(env, decompressed),
-        Err(_) => Err(rustler::error::Error::Term(Box::new(
-            atoms::zstd_decompression_failed(),
-        ))),
+    // Enforce a strict 256MB limit for NIF decompression to prevent OOMing the Erlang VM
+    const NIF_DECOMPRESSION_LIMIT: u64 = 256 * 1024 * 1024;
+
+    match compression::decompress_zstd_with_limit(data.as_slice(), NIF_DECOMPRESSION_LIMIT) {
+        Ok(decompressed) => binary_from_vec(env, &decompressed),
+        Err(compression::CompressionError::SizeExceeded | _) => Err(rustler::error::Error::Term(
+            Box::new(atoms::zstd_decompression_failed()),
+        )),
     }
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn compress_xz<'a>(env: Env<'a>, data: Binary<'a>, level: Option<u32>) -> NifResult<Binary<'a>> {
     match compression::compress_xz(data.as_slice(), level) {
-        Ok(compressed) => binary_from_vec(env, compressed),
+        Ok(compressed) => binary_from_vec(env, &compressed),
         Err(_) => Err(rustler::error::Error::Term(Box::new(
             atoms::xz_compression_failed(),
         ))),
     }
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn decompress_xz<'a>(env: Env<'a>, data: Binary<'a>) -> NifResult<Binary<'a>> {
     match compression::decompress_xz(data.as_slice()) {
-        Ok(decompressed) => binary_from_vec(env, decompressed),
+        Ok(decompressed) => binary_from_vec(env, &decompressed),
         Err(_) => Err(rustler::error::Error::Term(Box::new(
             atoms::xz_decompression_failed(),
         ))),
@@ -181,30 +187,26 @@ fn decompress_xz<'a>(env: Env<'a>, data: Binary<'a>) -> NifResult<Binary<'a>> {
 // Chunking Functions (FastCDC)
 // =============================================================================
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn chunk_data<'a>(
     env: Env<'a>,
     data: Binary<'a>,
     min_size: Option<u32>,
     avg_size: Option<u32>,
     max_size: Option<u32>,
-) -> NifResult<Vec<(String, u32, u32)>> {
+) -> NifResult<Vec<(String, u64, u64)>> {
     let _ = env;
-    let min = min_size.unwrap_or(16_384) as usize;
-    let avg = avg_size.unwrap_or(65_536) as usize;
-    let max = max_size.unwrap_or(262_144) as usize;
+    let min = min_size.unwrap_or(256 * 1024) as usize;
+    let avg = avg_size.unwrap_or(1024 * 1024) as usize;
+    let max = max_size.unwrap_or(4 * 1024 * 1024) as usize;
 
-    let cursor = std::io::Cursor::new(data.as_slice());
+    let cursor = Cursor::new(data.as_slice());
 
     match chunking::chunk_stream(cursor, Some(min), Some(avg), Some(max)) {
         Ok(chunks) => Ok(chunks
             .into_iter()
-            .map(|(hash, offset, length)| {
-                #[allow(clippy::cast_possible_truncation)]
-                let offset_u32 = offset as u32;
-                #[allow(clippy::cast_possible_truncation)]
-                let length_u32 = length as u32;
-                (hash, offset_u32, length_u32)
+            .map(|chunk| {
+                (chunk.hash_hex(), chunk.offset, chunk.length as u64)
             })
             .collect()),
         Err(chunking::ChunkingError::Bounds { .. }) => Err(rustler::error::Error::Term(Box::new(
@@ -213,20 +215,27 @@ fn chunk_data<'a>(
         Err(chunking::ChunkingError::Io(_)) => Err(rustler::error::Error::Term(Box::new(
             atoms::io_error(),
         ))),
+        Err(chunking::ChunkingError::ZeroLengthChunk) => Err(rustler::error::Error::Term(Box::new(
+            atoms::zero_length_chunk(),
+        ))),
+        Err(chunking::ChunkingError::InvalidOptions(_)) => Err(rustler::error::Error::Term(Box::new(
+            atoms::invalid_chunking_options(),
+        ))),
     }
 }
 
-#[rustler::nif]
+#[rustler::nif(schedule = "DirtyCpu")]
 fn chunk_data_streaming<'a>(
-    _env: Env<'a>,
+    env: Env<'a>,
     data: Binary<'a>,
     min_size: Option<u32>,
     avg_size: Option<u32>,
     max_size: Option<u32>,
-) -> NifResult<Vec<(String, u32, u32)>> {
-    let min = min_size.unwrap_or(16_384) as usize;
-    let avg = avg_size.unwrap_or(65_536) as usize;
-    let max = max_size.unwrap_or(262_144) as usize;
+) -> NifResult<Vec<(String, u64, u64)>> {
+    let _ = env;
+    let min = min_size.unwrap_or(256 * 1024) as usize;
+    let avg = avg_size.unwrap_or(1024 * 1024) as usize;
+    let max = max_size.unwrap_or(4 * 1024 * 1024) as usize;
 
     let cursor = Cursor::new(data.as_slice());
     let stream = chunking::ChunkStream::new(cursor, Some(min), Some(avg), Some(max));
@@ -238,16 +247,17 @@ fn chunk_data_streaming<'a>(
                 rustler::error::Error::Term(Box::new(atoms::chunk_bounds_invalid()))
             }
             chunking::ChunkingError::Io(_) => {
-                rustler::error::Error::Term(Box::new(atoms::chunk_bounds_invalid()))
+                rustler::error::Error::Term(Box::new(atoms::io_error()))
+            }
+            chunking::ChunkingError::ZeroLengthChunk => {
+                rustler::error::Error::Term(Box::new(atoms::zero_length_chunk()))
+            }
+            chunking::ChunkingError::InvalidOptions(_) => {
+                rustler::error::Error::Term(Box::new(atoms::invalid_chunking_options()))
             }
         })?;
 
-        #[allow(clippy::cast_possible_truncation)]
-        let offset_u32 = chunk.offset as u32;
-        #[allow(clippy::cast_possible_truncation)]
-        let length_u32 = chunk.length as u32;
-
-        chunks.push((chunk.hash, offset_u32, length_u32));
+        chunks.push((chunk.hash_hex(), chunk.offset, chunk.length as u64));
     }
 
     Ok(chunks)

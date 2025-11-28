@@ -1,4 +1,4 @@
-use chunker::chunking;
+use chunker::chunking::{self, HashAlgorithm};
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 use std::fs::File;
 use std::io::{BufReader, Write};
@@ -16,8 +16,8 @@ fn streaming_matches_in_memory_for_large_fixture() -> Result<(), Box<dyn std::er
     let file = File::open(temp.path())?;
     let reader = BufReader::new(file);
 
-    let streaming = chunking::chunk_stream(reader, None, None, None)?;
-    let in_memory = chunking::chunk_data(&data, None, None, None)?;
+    let streaming = chunking::chunk_stream_with_hash(reader, None, None, None, HashAlgorithm::Blake3)?;
+    let in_memory = chunking::chunk_data_with_hash(&data, None, None, None, HashAlgorithm::Blake3)?;
 
     assert_eq!(in_memory, streaming);
     Ok(())
@@ -40,8 +40,8 @@ fn streaming_respects_custom_boundaries() -> Result<(), Box<dyn std::error::Erro
     let avg = Some(32_768usize);
     let max = Some(131_072usize);
 
-    let streaming = chunking::chunk_stream(reader, min, avg, max)?;
-    let in_memory = chunking::chunk_data(&data, min, avg, max)?;
+    let streaming = chunking::chunk_stream_with_hash(reader, min, avg, max, HashAlgorithm::Blake3)?;
+    let in_memory = chunking::chunk_data_with_hash(&data, min, avg, max, HashAlgorithm::Blake3)?;
 
     assert_eq!(in_memory, streaming);
     Ok(())

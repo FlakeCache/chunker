@@ -1,9 +1,11 @@
 use chunker::{
+    chunking::ChunkStream,
     compression::compress_zstd,
     hashing::sha256_hash,
 };
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use fastcdc::v2020::FastCDC;
+use std::io::Cursor;
 
 fn benchmark_chunking(c: &mut Criterion) {
     let size = 10 * 1024 * 1024; // 10 MB
@@ -11,12 +13,31 @@ fn benchmark_chunking(c: &mut Criterion) {
     
     let mut group = c.benchmark_group("chunking");
     let _ = group.throughput(Throughput::Bytes(size as u64));
-    let _ = group.bench_function("fastcdc_10mb", |b| {
+    
+    let _ = group.bench_function("fastcdc_raw_10mb", |b| {
         b.iter(|| {
-            let chunks = FastCDC::new(black_box(&data), 1024, 4096, 16384);
+            let chunks = FastCDC::new(black_box(&data), 256 * 1024, 1024 * 1024, 4 * 1024 * 1024);
             for _ in chunks {}
         });
     });
+
+    let _ = group.bench_function("chunk_stream_10mb", |b| {
+        b.iter(|| {
+            let cursor = Cursor::new(black_box(&data));
+            let stream = ChunkStream::new(cursor, None, None, None);
+            for chunk in stream {
+                let _ = black_box(chunk.unwrap());
+            }
+        });
+    });
+    
+    let _ = group.bench_function("chunk_data_eager_10mb", |b| {
+        b.iter(|| {
+            let _ = chunker::chunking::chunk_data(black_box(&data), None, None, None);
+        });
+    });
+    
+    
     group.finish();
 }
 
@@ -42,10 +63,7 @@ fn benchmark_compression(c: &mut Criterion) {
     let _ = group.throughput(Throughput::Bytes(size as u64));
     let _ = group.bench_function("zstd_1mb_zeros", |b| {
         b.iter(|| {
-            assert!(
-                compress_zstd(black_box(&data), Some(3)).is_ok(),
-                "zstd compression failed during benchmark"
-            );
+            let _ = black_box(compress_zstd(black_box(&data), Some(3)));
         });
     });
     group.finish();

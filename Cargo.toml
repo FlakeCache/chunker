@@ -12,16 +12,27 @@ readme = "README.md"
 categories = ["algorithms", "compression", "cryptography"]
 keywords = ["nix", "nar", "hash", "sign", "compress", "chunk", "fastcdc", "rustler", "nif"]
 
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.bench]
+lto = true
+codegen-units = 1
+
 [package.metadata.cargo-machete]
 ignored = ["bzip2", "serde", "serde_json"]
 
 [features]
-default = []
+default = ["asm"]
+asm = ["sha2/asm"]
 # Enable Rustler NIF bindings. This is disabled by default to keep the default
 # build focused on the pure Rust library. Enable with `--features nif` when
 # building the NIF cdylib for Elixir.
 nif = ["rustler"]
 async-stream = ["futures"]
+telemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:tokio"]
 
 [lib]
 name = "chunker"
@@ -33,8 +44,9 @@ rustler = { version = "0.37.0", optional = true }
 thiserror = "1.0"
 
 # Cryptography
-ed25519-dalek = { version = "2.2", features = ["rand_core", "fast", "batch"] }
-sha2 = { version = "0.10.9", features = ["asm"] }
+ed25519-dalek = { version = "2.2", features = ["rand_core", "fast", "batch", "zeroize"] }
+sha2 = { version = "0.10.9" }
+zeroize = { version = "1.7", features = ["derive"] }
 
 # Compression
 zstd = "0.13.3"
@@ -62,8 +74,19 @@ hex = "0.4.3"
 # Base64 encoding with strict padding validation
 base64 = "0.22.1"
 tracing = "0.1.41"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+metrics = "0.24"
 lz4_flex = "0.12.0"
-blake3 = "1.8.2"
+blake3 = { version = "1.8.2", features = ["rayon"] }
+bytes = "1.11.0"
+rayon = "1.10"
+
+# Telemetry (Optional)
+opentelemetry = { version = "0.22", optional = true }
+opentelemetry_sdk = { version = "0.22", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.15", optional = true }
+tracing-opentelemetry = { version = "0.23", optional = true }
+tokio = { version = "1.36", features = ["full"], optional = true }
 
 [dev-dependencies]
 tempfile = "3.12.0"

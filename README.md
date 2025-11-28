@@ -2,146 +2,78 @@
 
 High-performance content-defined chunking (FastCDC) for Nix NARs.
 
-**Status**: Internal FlakeCache project | Nix archive handler for production binary caches
+## What it does
+- FastCDC chunking with SHA-256 (default) or BLAKE3 hashing
+- Compression: zstd, xz (LZMA2), bzip2
+- Ed25519 signing and Nix base32 encoding
+- Optional Rustler NIF bindings for Elixir
 
-## Features
-
-- **FastCDC Chunking**: Content-defined chunking algorithm for optimal deduplication
-- **Multiple Compression**: zstd, xz (LZMA2), bzip2 support
-- **Cryptographic Signing**: Ed25519 signatures for data authenticity
-- **Hash Computation**: SHA256 and Nix base32 encoding
-- **Rustler NIF**: Native Elixir bindings for high performance
-- **Standalone Library**: Use as a Rust library independent of Elixir
-
-## Quick Start
-
-### As Elixir Rustler NIF
-
-```elixir
-alias FlakecacheApp.Native.Chunker
-
-# Hash computation
-hash = Chunker.sha256_hash(data)
-
-# Content-defined chunking with deduplication
-{:ok, chunks} = Chunker.chunk_data(data, 16_384, 65_536, 262_144)
-
-# Compression/decompression
-{:ok, compressed} = Chunker.compress_zstd(data, 3)
-{:ok, original} = Chunker.decompress_zstd(compressed)
-
-# Ed25519 signing
-{:ok, {secret_key, public_key}} = Chunker.generate_keypair()
-{:ok, signature} = Chunker.sign_data(data, secret_key)
-:ok = Chunker.verify_signature(data, signature, public_key)
-```
-
-### As Rust Library
-
+## Quick start (Rust)
 ```rust
-use chunker::fastcdc::FastCDC;
-use chunker::chunking::ChunkStream;
+use chunker::chunking::{chunk_data, ChunkStream};
 use std::io::BufReader;
 
+// Eager chunking
 let data = b"data to chunk";
-let chunker = FastCDC::new(data, 16_384, 65_536, 262_144);
-for chunk in chunker {
-    println!("Chunk at {}: {} bytes", chunk.offset, chunk.length);
-}
+let chunks = chunk_data(data, None, None, None)?;
+println!("First chunk hash (hex): {}", chunks[0].hash_hex());
 
-// Stream large inputs without holding everything in memory
+// Streaming chunking
 let file = BufReader::new(std::fs::File::open("/path/to/large.nar")?);
-let stream = ChunkStream::new(file, None, None, None);
-for chunk in stream {
+for chunk in ChunkStream::new(file, None, None, None) {
     let chunk = chunk?;
-    println!("Streaming chunk at {}: {} bytes (hash: {})", chunk.offset, chunk.length, chunk.hash);
+    println!("Chunk at {} ({} bytes)", chunk.offset, chunk.length);
 }
 ```
 
-## Building
-
-### Prerequisites
-
-- Rust 1.70+
-- Cargo
-- (Optional for Elixir NIF) Elixir 1.14+, Rustler plugin
-
-### Development
-
+## Build & test
 ```bash
-cargo build
-cargo test
+cargo build           # debug
+cargo test            # run tests
+cargo build --release # optimized
 ```
 
-### Release (optimized)
+## Async notes
+- `chunk_data_async` enforces a 512 MiB buffer cap; reject larger streams to avoid OOM.
+- `chunk_stream_blocking` bridges async readers via blocking reads; call from a blocking task.
+- `chunk_stream_async` offloads the blocking work to a thread so it won’t stall your async runtime.
+
+## Benchmark snapshots (single-thread)
+| Path                    | Size / Params                        | Throughput      | Notes                                   |
+| ----------------------- | ------------------------------------ | --------------- | --------------------------------------- |
+| FastCDC raw             | 10 MiB (256K/1M/4M)                  | ~2.0 GiB/s      | Reference chunker only                  |
+| ChunkStream (hash+copy) | 10 MiB (defaults)                    | ~0.95–1.1 GiB/s | End-to-end chunk+hash (SHA-256)         |
+| SHA-256 hash            | 1 MiB                                | ~2.0 GiB/s      | Hardware-accelerated                    |
+| Zstd compress           | 1 MiB zeros, level 3                 | ~4.6 GiB/s      | With buffer reuse                       |
+
+CPU note: numbers are from a recent desktop CPU with `RUSTFLAGS="-C target-cpu=native"` and a release build. Rerun `cargo bench` on your hardware (x86_64/ARM) to get local figures.
+
+## Telemetry & Observability
+
+By default, `chunker` uses standard logging (via `tracing`) which prints to stderr. This is ideal for CLI usage and simple debugging.
+
+For production deployments or performance analysis, you can enable the `telemetry` feature. This switches the binary to use:
+- **Tokio Runtime**: For async telemetry export.
+- **OTLP Exporter**: Sends traces to Jaeger, Honeycomb, or any OpenTelemetry collector.
+- **Async Pipeline**: Ensures telemetry doesn't block the main chunking loop.
+
+**When to use `telemetry`:**
+- **CLI Binary**: Enable for production/profiling (`cargo build --release --features telemetry`).
+- **Build Runners / CI**: Perfect for monitoring chunking performance in CI pipelines.
+- **Elixir NIF**: **Do not enable**. The NIF uses `tracing` but relies on the host VM or simple logging. Enabling the `telemetry` feature (and its Tokio runtime) inside a NIF is not recommended.
 
 ```bash
-cargo build --release
+# Build with full telemetry support (CLI only)
+cargo build --release --features telemetry
+
+# Run with a local Jaeger instance
+docker run -d -p 4317:4317 -p 16686:16686 jaegertracing/all-in-one:latest
+./target/release/chunker large_file.bin
+
+# Pipeline usage (reading from stdin)
+# Useful for streaming data from S3 or build artifacts directly
+aws s3 cp s3://bucket/file.tar.gz - | ./target/release/chunker -
 ```
-
-### Testing
-
-```bash
-# All tests (unit + Rust)
-cargo test
-
-# Only unit tests
-cargo test --lib
-
-# With coverage
-cargo tarpaulin --out Html --output-dir cover/
-```
-
-## Module Structure
-
-- **`chunking.rs`** - FastCDC chunking implementation
-- **`compression.rs`** - zstd/xz/bzip2 compression handlers
-- **`hashing.rs`** - SHA256 and Nix base32 encoding
-- **`signing.rs`** - Ed25519 keypair and signature operations
-- **`lib.rs`** - Rustler NIF initialization
-
-## Performance Notes
-
-FastCDC provides content-aware chunking:
-
-- **Deduplication**: Identical content → identical chunks (position-independent)
-- **Resilience**: Content insertion/deletion doesn't affect unrelated chunks
-- **Configurability**: Adjustable min (16KB), avg (64KB), max (256KB) sizes
-
-Typical speeds on modern hardware:
-
-- Chunking: ~500 MB/s
-- SHA256: ~1 GB/s (hardware-accelerated)
-- Compression: 50-300 MB/s (algorithm-dependent)
-
-## Versioning & Releases
-
-Releases published to [GitHub Releases](https://github.com/FlakeCache/chunker/releases) (private).
-
-Format: `MAJOR.MINOR.PATCH` (semver)
-- Pre-releases: `-alpha`, `-beta`, `-rc`
-
-## Release
-
-## Release
-
-To create a new release:
-
-1. Bump the version in `Cargo.toml`.
-2. Create and push a git tag:
-
-```bash
-git tag v1.0.1
-git push origin v1.0.1
-```
-
-The GitHub Actions workflow will automatically:
-- Build the release binary using Nix.
-- Package it into a `chunker-<version>.tar.gz` archive.
-- Attest the build provenance.
-- Create a GitHub release with the archive attached.
-
 
 ## License
-
-Apache License 2.0
+Apache-2.0
