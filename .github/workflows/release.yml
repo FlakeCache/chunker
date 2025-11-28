@@ -33,7 +33,9 @@ jobs:
             cargo test --all --release
             cargo test --all --release --features telemetry
             cargo test --all --release --features nif
-            cargo clippy --all-features --all-targets -- -D warnings
+            cargo clippy --all-targets -- -D warnings
+            cargo clippy --all-targets --features telemetry -- -D warnings
+            cargo clippy --all-targets --features nif -- -D warnings
             cargo fmt --all -- --check
             cargo build --release --all-features --bin chunker
             stat -c \"%n %s\" target/release/chunker > size-default.txt

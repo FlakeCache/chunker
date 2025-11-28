@@ -1,33 +1,33 @@
 #![allow(clippy::cast_precision_loss)]
+#[cfg(feature = "async-stream")]
+use async_stream::try_stream;
 use blake3;
 use bytes::{Bytes, BytesMut};
 use fastcdc::v2020::FastCDC;
-use metrics::{counter, histogram};
 #[cfg(feature = "async-stream")]
-use async_stream::try_stream;
-use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::env;
-use std::fmt;
-use std::io::{ErrorKind, Read};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::collections::VecDeque;
-use tracing::{debug, instrument, trace};
+use futures::executor::block_on;
 #[cfg(feature = "async-stream")]
 use futures::io::AsyncRead;
 #[cfg(feature = "async-stream")]
 use futures::io::AsyncReadExt;
 #[cfg(feature = "async-stream")]
-use futures::executor::block_on;
-#[cfg(feature = "async-stream")]
 use futures::stream::Stream;
 #[cfg(feature = "async-stream")]
 use futures::stream::StreamExt;
+use metrics::{counter, histogram};
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
+use std::env;
+use std::fmt;
+use std::io::{ErrorKind, Read};
 #[cfg(feature = "async-stream")]
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "async-stream")]
 use std::task::{Context, Poll};
+use tracing::{debug, instrument, trace};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ChunkingError {
@@ -117,36 +117,47 @@ impl ChunkingOptions {
     ///
     /// Returns `ChunkingError::InvalidOptions` if the provided sizes are invalid (e.g. min > max).
     #[instrument(level = "debug", skip(min_size, avg_size, max_size), fields(min = ?min_size, avg = ?avg_size, max = ?max_size))]
-    pub fn resolve(min_size: Option<usize>, avg_size: Option<usize>, max_size: Option<usize>) -> Result<Self, ChunkingError> {
+    pub fn resolve(
+        min_size: Option<usize>,
+        avg_size: Option<usize>,
+        max_size: Option<usize>,
+    ) -> Result<Self, ChunkingError> {
         let options = Self {
-            min_size: min_size.unwrap_or(256 * 1024),       // 256 KB
-            avg_size: avg_size.unwrap_or(1024 * 1024),      // 1 MB
-            max_size: max_size.unwrap_or(4 * 1024 * 1024),  // 4 MB
+            min_size: min_size.unwrap_or(256 * 1024),      // 256 KB
+            avg_size: avg_size.unwrap_or(1024 * 1024),     // 1 MB
+            max_size: max_size.unwrap_or(4 * 1024 * 1024), // 4 MB
         };
-        
+
         options.validate()?;
-        
+
         trace!(?options, "resolved_chunking_options");
         Ok(options)
     }
 
     fn validate(&self) -> Result<(), ChunkingError> {
         if self.min_size < 64 {
-            return Err(ChunkingError::InvalidOptions("min_size must be >= 64".into()));
+            return Err(ChunkingError::InvalidOptions(
+                "min_size must be >= 64".into(),
+            ));
         }
         if self.min_size > self.avg_size {
-            return Err(ChunkingError::InvalidOptions("min_size must be <= avg_size".into()));
+            return Err(ChunkingError::InvalidOptions(
+                "min_size must be <= avg_size".into(),
+            ));
         }
         if self.avg_size > self.max_size {
-            return Err(ChunkingError::InvalidOptions("avg_size must be <= max_size".into()));
+            return Err(ChunkingError::InvalidOptions(
+                "avg_size must be <= max_size".into(),
+            ));
         }
         if self.max_size > 1024 * 1024 * 1024 {
-            return Err(ChunkingError::InvalidOptions("max_size must be <= 1GB".into()));
+            return Err(ChunkingError::InvalidOptions(
+                "max_size must be <= 1GB".into(),
+            ));
         }
         Ok(())
     }
 }
-
 
 /// Chunk data using `FastCDC` (Content-Defined Chunking)
 /// Args: data (binary), `min_size` (optional), `avg_size` (optional), `max_size` (optional)
@@ -277,7 +288,10 @@ fn effective_async_buffer_limit() -> usize {
         .ok()
         .and_then(|s| s.parse::<usize>().ok());
     let cap = from_env.unwrap_or(DEFAULT_ASYNC_BUFFER_LIMIT);
-    cap.clamp(MIN_ASYNC_BUFFER_LIMIT, MAX_ASYNC_BUFFER_LIMIT)
+    cap.clamp(
+        MIN_ASYNC_BUFFER_LIMIT,
+        MAX_ASYNC_BUFFER_LIMIT.min(usize::MAX),
+    )
 }
 
 impl<R: Read> fmt::Debug for ChunkStream<R> {
@@ -298,7 +312,12 @@ impl<R: Read> ChunkStream<R> {
     ///
     /// Returns `ChunkingError::InvalidOptions` if the provided sizes are invalid.
     #[instrument(skip(reader))]
-    pub fn new(reader: R, min_size: Option<usize>, avg_size: Option<usize>, max_size: Option<usize>) -> Result<Self, ChunkingError> {
+    pub fn new(
+        reader: R,
+        min_size: Option<usize>,
+        avg_size: Option<usize>,
+        max_size: Option<usize>,
+    ) -> Result<Self, ChunkingError> {
         Self::new_with_hash(reader, min_size, avg_size, max_size, HashAlgorithm::Sha256)
     }
 
@@ -377,7 +396,8 @@ impl<R: Read> Iterator for ChunkStream<R> {
                         return Some(Err(std::io::Error::new(
                             ErrorKind::InvalidData,
                             format!("FastCDC returned non-zero offset {offset} for first chunk"),
-                        ).into()));
+                        )
+                        .into()));
                     }
 
                     // Check if this chunk is "complete"
@@ -434,7 +454,9 @@ impl<R: Read> Iterator for ChunkStream<R> {
                         let chunk_offset = current_position + offset as u64;
 
                         if tracing::enabled!(tracing::Level::TRACE)
-                            && TRACE_SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed).is_multiple_of(TRACE_SAMPLE_EVERY)
+                            && TRACE_SAMPLE_COUNTER
+                                .fetch_add(1, Ordering::Relaxed)
+                                .is_multiple_of(TRACE_SAMPLE_EVERY)
                         {
                             trace!(offset = chunk_offset, length = len, "chunk_emitted");
                         }
@@ -447,7 +469,8 @@ impl<R: Read> Iterator for ChunkStream<R> {
                         })
                     };
 
-                    let chunks: Vec<Result<ChunkMetadata, ChunkingError>> = if cut_points.len() > 4 {
+                    let chunks: Vec<Result<ChunkMetadata, ChunkingError>> = if cut_points.len() > 4
+                    {
                         cut_points.par_iter().map(process_chunk).collect()
                     } else {
                         cut_points.iter().map(process_chunk).collect()
@@ -479,7 +502,7 @@ impl<R: Read> Iterator for ChunkStream<R> {
                 counter!("chunker.chunks_emitted").increment(1);
                 counter!("chunker.bytes_processed").increment(len as u64);
                 histogram!("chunker.chunk_size").record(len as f64);
-                
+
                 let hash_array: [u8; 32] = match self.hash {
                     HashAlgorithm::Sha256 => {
                         let mut hasher = Sha256::new();
@@ -491,7 +514,7 @@ impl<R: Read> Iterator for ChunkStream<R> {
 
                 let chunk_offset = self.position;
                 self.position += len as u64;
-                
+
                 return Some(Ok(ChunkMetadata {
                     hash: hash_array,
                     offset: chunk_offset,
@@ -503,17 +526,18 @@ impl<R: Read> Iterator for ChunkStream<R> {
             // 3. Read more data (cap per-read to avoid huge allocations)
             // We increase the read size to encourage batching (e.g. 8x max_size)
             let slice_cap = effective_read_slice_cap();
-            let target_read = std::cmp::max(self.max_size * 8, 4 * 1024 * 1024); 
-            let read_size = std::cmp::max(std::cmp::min(target_read, slice_cap), MIN_READ_SLICE_CAP);
-            
+            let target_read = std::cmp::max(self.max_size * 8, 4 * 1024 * 1024);
+            let read_size =
+                std::cmp::max(std::cmp::min(target_read, slice_cap), MIN_READ_SLICE_CAP);
+
             // Reserve space
             self.buffer.reserve(read_size);
-            
+
             // Read into the buffer
             // Using resize to zero-init (safe)
             let start = self.buffer.len();
             self.buffer.resize(start + read_size, 0);
-            
+
             match self.reader.read(&mut self.buffer[start..]) {
                 Ok(0) => {
                     self.eof = true;
@@ -549,8 +573,7 @@ pub struct ChunkStreamAsync<R> {
 #[cfg(feature = "async-stream")]
 impl<R> fmt::Debug for ChunkStreamAsync<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ChunkStreamAsync")
-            .finish_non_exhaustive()
+        f.debug_struct("ChunkStreamAsync").finish_non_exhaustive()
     }
 }
 
@@ -564,7 +587,12 @@ impl<R: AsyncRead + Unpin + Send + 'static> ChunkStreamAsync<R> {
     /// # Errors
     ///
     /// Returns `ChunkingError::InvalidOptions` if the provided sizes are invalid.
-    pub fn new(reader: R, min_size: Option<usize>, avg_size: Option<usize>, max_size: Option<usize>) -> Result<Self, ChunkingError> {
+    pub fn new(
+        reader: R,
+        min_size: Option<usize>,
+        avg_size: Option<usize>,
+        max_size: Option<usize>,
+    ) -> Result<Self, ChunkingError> {
         Self::new_with_hash(reader, min_size, avg_size, max_size, HashAlgorithm::Sha256)
     }
 
@@ -630,7 +658,7 @@ impl<R: AsyncRead + Unpin + Send + 'static> ChunkStreamAsync<R> {
                             counter!("chunker.chunks_emitted").increment(1);
                             counter!("chunker.bytes_processed").increment(len as u64);
                             histogram!("chunker.chunk_size").record(len as f64);
-                            
+
                             let hash_array: [u8; 32] = match hash {
                                 HashAlgorithm::Sha256 => {
                                     let mut hasher = Sha256::new();
@@ -672,7 +700,7 @@ impl<R: AsyncRead + Unpin + Send + 'static> ChunkStreamAsync<R> {
                     counter!("chunker.chunks_emitted").increment(1);
                     counter!("chunker.bytes_processed").increment(len as u64);
                     histogram!("chunker.chunk_size").record(len as f64);
-                    
+
                     let hash_array: [u8; 32] = match hash {
                         HashAlgorithm::Sha256 => {
                             let mut hasher = Sha256::new();
@@ -684,7 +712,7 @@ impl<R: AsyncRead + Unpin + Send + 'static> ChunkStreamAsync<R> {
 
                     let chunk_offset = position;
                     position += len as u64;
-                    
+
                     yield ChunkMetadata {
                         hash: hash_array,
                         offset: chunk_offset,
@@ -700,7 +728,7 @@ impl<R: AsyncRead + Unpin + Send + 'static> ChunkStreamAsync<R> {
                 buffer.reserve(read_size);
                 let start = buffer.len();
                 buffer.resize(start + read_size, 0);
-                
+
                 match reader.read(&mut buffer[start..]).await {
                     Ok(0) => {
                         eof = true;
@@ -769,7 +797,7 @@ impl<R: AsyncRead + Unpin> Read for BlockingAsyncReadAdapter<R> {
 /// This function collects all chunks into a `Vec`, which means the entire payload
 /// will eventually reside in memory. To avoid OOM on large files, use [`ChunkStreamAsync`] directly.
 ///
-    /// This function enforces a buffer limit on the total accumulated payload size.
+/// This function enforces a buffer limit on the total accumulated payload size.
 ///
 /// # Errors
 ///
@@ -780,7 +808,7 @@ pub async fn chunk_data_async<R: AsyncRead + Unpin + Send + 'static>(
     min_size: Option<usize>,
     avg_size: Option<usize>,
     max_size: Option<usize>,
-    ) -> Result<Vec<ChunkMetadata>, ChunkingError> {
+) -> Result<Vec<ChunkMetadata>, ChunkingError> {
     let buffer_limit = effective_async_buffer_limit();
     let mut stream = ChunkStreamAsync::new(reader, min_size, avg_size, max_size)?;
     let mut chunks = Vec::new();
@@ -789,14 +817,14 @@ pub async fn chunk_data_async<R: AsyncRead + Unpin + Send + 'static>(
     while let Some(chunk_res) = stream.next().await {
         let chunk = chunk_res?;
         total_len += chunk.length;
-        
+
         if total_len > buffer_limit {
             return Err(ChunkingError::BufferLimitExceeded {
                 attempted: total_len,
                 limit: buffer_limit,
             });
         }
-        
+
         chunks.push(chunk);
     }
 
@@ -893,7 +921,8 @@ mod tests {
         let cursor = Cursor::new(&data);
         let reader = BufReader::new(cursor);
 
-        let mut stream = ChunkStream::new(reader, Some(16 * 1024), Some(32 * 1024), Some(64 * 1024))?;
+        let mut stream =
+            ChunkStream::new(reader, Some(16 * 1024), Some(32 * 1024), Some(64 * 1024))?;
         let mut total = 0_usize;
         let mut count = 0_usize;
 
@@ -913,9 +942,7 @@ mod tests {
     fn chunking_options_defaults_match_chunk_data() -> Result<(), ChunkingError> {
         let payload = b"streaming chunker parity test".repeat(2048);
         let mut streaming = ChunkStream::new(Cursor::new(&payload), None, None, None)?;
-        let collected: Vec<_> = streaming
-            .by_ref()
-            .collect::<Result<_, _>>()?;
+        let collected: Vec<_> = streaming.by_ref().collect::<Result<_, _>>()?;
 
         let eager = chunk_data(&payload, None, None, None)?;
         assert_eq!(collected, eager);
@@ -965,7 +992,13 @@ mod tests {
     #[test]
     fn test_chunk_stream_with_hash_matches_eager() -> Result<(), ChunkingError> {
         let data = b"stream hash parity test payload".repeat(1024);
-        let eager = chunk_data_with_hash(&data, Some(1024), Some(4096), Some(8192), HashAlgorithm::Blake3)?;
+        let eager = chunk_data_with_hash(
+            &data,
+            Some(1024),
+            Some(4096),
+            Some(8192),
+            HashAlgorithm::Blake3,
+        )?;
         let stream = chunk_stream_with_hash(
             Cursor::new(&data),
             Some(1024),
