@@ -160,9 +160,9 @@ impl<R: Read + Send> Read for AutoDecompressReader<R> {
     }
 }
 
-/// Maximum decompressed size: 1GB
+/// Maximum decompressed size: 1 GB
 /// Protects against decompression bomb attacks where a small compressed payload
-/// expands to exhaust memory (e.g., 1KB → 10GB).
+/// expands to exhaust memory (e.g., 1KB → >1 GB).
 const DEFAULT_MAX_DECOMPRESSED_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB
 const MAX_DECOMPRESSED_SIZE: u64 = DEFAULT_MAX_DECOMPRESSED_SIZE;
 
@@ -207,13 +207,13 @@ pub fn decompress_zstd_into_with_limit_and_dict(
         let decoder = zstd::Decoder::with_prepared_dictionary(reader, d)
             .map_err(|e| CompressionError::Decompression(format!("init: {e}")))?;
 
-        let mut limited_reader = decoder.take(limit);
+        let mut limited_reader = decoder.take(limit + 1);
         let start_len = output.len();
         let _bytes_read = limited_reader
             .read_to_end(output)
             .map_err(|e| CompressionError::Decompression(e.to_string()))?;
 
-        if (output.len() - start_len) as u64 == limit {
+        if (output.len() - start_len) as u64 > limit {
             warn!("zstd_decompression_bomb_detected");
             return Err(CompressionError::SizeExceeded);
         }
@@ -225,13 +225,13 @@ pub fn decompress_zstd_into_with_limit_and_dict(
     let decoder = zstd::Decoder::new(reader)
         .map_err(|e| CompressionError::Decompression(format!("init: {e}")))?;
 
-    let mut limited_reader = decoder.take(limit);
+    let mut limited_reader = decoder.take(limit + 1);
     let start_len = output.len();
     let _bytes_read = limited_reader
         .read_to_end(output)
         .map_err(|e| CompressionError::Decompression(e.to_string()))?;
 
-    if (output.len() - start_len) as u64 == limit {
+    if (output.len() - start_len) as u64 > limit {
         warn!("zstd_decompression_bomb_detected");
         return Err(CompressionError::SizeExceeded);
     }
@@ -277,13 +277,13 @@ pub fn compress_lz4_into(data: &[u8], output: &mut Vec<u8>) -> Result<(), Compre
 pub fn decompress_lz4_into(data: &[u8], output: &mut Vec<u8>) -> Result<(), CompressionError> {
     let decoder = lz4_flex::frame::FrameDecoder::new(data);
     
-    // Limit reader to MAX_DECOMPRESSED_SIZE
-    let mut limited_reader = decoder.take(MAX_DECOMPRESSED_SIZE);
+    // Limit reader to MAX_DECOMPRESSED_SIZE + 1 to detect overflow
+    let mut limited_reader = decoder.take(MAX_DECOMPRESSED_SIZE + 1);
     let start_len = output.len();
     let _bytes_read = limited_reader.read_to_end(output).map_err(|e| CompressionError::Decompression(e.to_string()))?;
 
     // Check if we hit the size limit
-    if (output.len() - start_len) as u64 == MAX_DECOMPRESSED_SIZE {
+    if (output.len() - start_len) as u64 > MAX_DECOMPRESSED_SIZE {
         warn!("lz4_decompression_bomb_detected");
         return Err(CompressionError::SizeExceeded);
     }

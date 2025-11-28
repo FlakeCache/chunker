@@ -55,7 +55,7 @@ pub enum HashAlgorithm {
 /// Metadata for a single chunk emitted by streaming chunkers.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ChunkMetadata {
-    /// SHA-256 or Blake3 hash of the chunk payload (32 bytes).
+    /// Hash of the chunk payload (32 bytes) using the configured [`HashAlgorithm`].
     /// Using raw bytes is more efficient than hex strings for storage/transmission.
     #[serde(with = "hex_serde")]
     pub hash: [u8; 32],
@@ -248,6 +248,7 @@ pub struct ChunkStream<R: Read> {
 
 static TRACE_SAMPLE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const TRACE_SAMPLE_EVERY: u64 = 1024;
+const READ_SLICE_CAP: usize = 16 * 1024 * 1024; // 16 MiB per read to avoid oversized allocations
 #[cfg(feature = "async-stream")]
 const ASYNC_BUFFER_LIMIT: usize = 512 * 1024 * 1024; // 512 MiB safety cap
 
@@ -425,9 +426,8 @@ impl<R: Read> Iterator for ChunkStream<R> {
                 }));
             }
 
-            // 3. Read more data
-            // We want to read a decent amount.
-            let read_size = std::cmp::max(self.max_size, 4096);
+            // 3. Read more data (cap per-read to avoid huge allocations)
+            let read_size = std::cmp::max(std::cmp::min(self.max_size, READ_SLICE_CAP), 4096);
             
             // Reserve space
             self.buffer.reserve(read_size);
@@ -617,8 +617,8 @@ impl<R: AsyncRead + Unpin + Send + 'static> ChunkStreamAsync<R> {
                     continue;
                 }
 
-                // 3. Read more data
-                let read_size = std::cmp::max(options.max_size, 4096);
+                // 3. Read more data (cap per-read to avoid huge allocations)
+                let read_size = std::cmp::max(std::cmp::min(options.max_size, READ_SLICE_CAP), 4096);
                 buffer.reserve(read_size);
                 let start = buffer.len();
                 buffer.resize(start + read_size, 0);

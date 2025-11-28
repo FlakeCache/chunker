@@ -5,6 +5,8 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,17 +17,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Nix
         uses: cachix/install-nix-action@v27
         with:
           nix_path: nixpkgs=channel:nixos-unstable
 
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-default
+
       - name: Run tests and clippy
         run: |
           nix develop .#default --command bash -c "
             cargo test --all --release
+            cargo test --all --release --all-features
             cargo clippy --all-features --all-targets -- -D warnings
+            cargo fmt --all -- --check
           "
 
   build-release:
@@ -143,6 +151,11 @@ jobs:
         with:
           nix_path: nixpkgs=channel:nixos-unstable
 
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
       - name: Build & Sign
         run: |
           # Default to 'default' shell if not specified (for backward compat)
@@ -175,6 +188,9 @@ jobs:
             # 🛡️ Generate SBOM (Software Bill of Materials)
             echo '📝 Generating SBOM...'
             syft scan file:dist/chunker-${{ matrix.suffix }}\$EXT -o spdx-json=dist/chunker-${{ matrix.suffix }}.spdx.json
+
+            # Checksums for integrity verification
+            (cd dist && sha256sum * > SHA256SUMS)
             
             # 🔐 Sign Artifacts (using Cosign keyless / OIDC)
             # Note: In a real run, this requires ID_TOKEN permissions.
