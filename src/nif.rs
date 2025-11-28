@@ -221,6 +221,9 @@ fn chunk_data<'a>(
         Err(chunking::ChunkingError::InvalidOptions(_)) => Err(rustler::error::Error::Term(Box::new(
             atoms::invalid_chunking_options(),
         ))),
+        Err(chunking::ChunkingError::BufferLimitExceeded { .. }) => Err(rustler::error::Error::Term(Box::new(
+            atoms::io_error(),
+        ))),
     }
 }
 

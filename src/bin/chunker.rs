@@ -1,3 +1,4 @@
+#![allow(clippy::cast_precision_loss)]
 use chunker::chunking::ChunkStream;
 use std::fs::File;
 use std::io::{self, BufReader, Write};
