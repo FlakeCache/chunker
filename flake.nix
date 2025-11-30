@@ -103,6 +103,7 @@
               pkgs.cargo-zigbuild
               pkgs.cargo-cross
               pkgs.lefthook
+              pkgs.just
             ];
 
             shellHook = ''
