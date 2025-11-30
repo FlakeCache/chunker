@@ -106,9 +106,9 @@
             ];
 
             shellHook = ''
-              # Auto-install lefthook git hooks
+              # Auto-install lefthook git hooks (quiet for direnv compatibility)
               if [ -d .git ] && command -v lefthook &> /dev/null; then
-                lefthook install
+                lefthook install > /dev/null 2>&1 || true
               fi
             '';
           };
