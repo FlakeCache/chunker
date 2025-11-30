@@ -26,6 +26,7 @@
           cosign  # Artifact signing
           zig
           cargo-zigbuild
+          nodejs
         ];
 
         # Helper to create a Rust toolchain with specific targets
