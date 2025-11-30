@@ -13,9 +13,9 @@ pre-commit:
       glob: "*.rs"
       run: cargo clippy -- -D warnings
 
-    clippy-telemetry:
+    clippy-otel:
       glob: "*.rs"
-      run: cargo clippy --features telemetry -- -D warnings
+      run: cargo clippy --features otel -- -D warnings
 
     clippy-nif:
       glob: "*.rs"
@@ -27,8 +27,8 @@ pre-push:
     test-default:
       run: cargo test --release
 
-    test-telemetry:
-      run: cargo test --release --features telemetry
+    test-otel:
+      run: cargo test --release --features otel
 
     test-nif:
       run: cargo test --release --features nif

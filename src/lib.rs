@@ -46,10 +46,11 @@
 //!
 //! When compiled with the `nif` feature, provides Rustler NIF bindings for Elixir.
 
-#[cfg(all(feature = "nif", feature = "telemetry"))]
+// otel and nif are mutually exclusive - Tokio runtime inside NIF crashes Erlang VM
+#[cfg(all(feature = "nif", feature = "otel"))]
 compile_error!(
-    "The 'nif' and 'telemetry' features are mutually exclusive. \
-    Enabling 'telemetry' (Tokio runtime) inside a NIF is unsafe and can crash the Erlang VM. \
+    "The 'nif' and 'otel' features are mutually exclusive. \
+    Enabling 'otel' (Tokio runtime) inside a NIF is unsafe and can crash the Erlang VM. \
     Use standard logging for NIFs instead."
 );
 

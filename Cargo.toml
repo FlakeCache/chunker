@@ -38,14 +38,22 @@ debug = 0
 ignored = ["bzip2", "serde", "serde_json"]
 
 [features]
-default = ["asm"]
-asm = ["sha2/asm"]
-# Enable Rustler NIF bindings. This is disabled by default to keep the default
-# build focused on the pure Rust library. Enable with `--features nif` when
-# building the NIF cdylib for Elixir.
+default = ["sha2-asm"]
+
+# Use assembly-optimized SHA2 (faster hashing on x86_64/aarch64)
+sha2-asm = ["sha2/asm"]
+
+# Erlang/Elixir NIF bindings via Rustler (mutually exclusive with otel)
 nif = ["rustler"]
+
+# Async streaming support
 async-stream = ["futures"]
-telemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:tokio"]
+
+# OpenTelemetry instrumentation with Tokio runtime (mutually exclusive with nif)
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:tokio"]
+
+# Legacy alias for otel
+telemetry = ["otel"]
 
 [lib]
 name = "chunker"
