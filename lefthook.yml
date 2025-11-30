@@ -1,0 +1,42 @@
+# Lefthook - Git hooks manager
+# https://github.com/evilmartians/lefthook
+
+pre-commit:
+  parallel: true
+  commands:
+    fmt-check:
+      glob: "*.rs"
+      run: cargo fmt -- --check
+      stage_fixed: true
+
+    clippy-default:
+      glob: "*.rs"
+      run: cargo clippy -- -D warnings
+
+    clippy-telemetry:
+      glob: "*.rs"
+      run: cargo clippy --features telemetry -- -D warnings
+
+    clippy-nif:
+      glob: "*.rs"
+      run: cargo clippy --features nif -- -D warnings
+
+pre-push:
+  parallel: true
+  commands:
+    test-default:
+      run: cargo test --release
+
+    test-telemetry:
+      run: cargo test --release --features telemetry
+
+    test-nif:
+      run: cargo test --release --features nif
+
+# Validate commit message format (optional)
+commit-msg:
+  commands:
+    check-format:
+      run: |
+        # Allow conventional commits or simple messages
+        head -1 {1} | grep -qE "^(feat|fix|docs|style|refactor|test|chore|ci|perf|build|revert)(\(.+\))?: .+|^.{1,72}$"

@@ -102,13 +102,13 @@
               pkgs.zig
               pkgs.cargo-zigbuild
               pkgs.cargo-cross
+              pkgs.lefthook
             ];
 
             shellHook = ''
-              # Auto-configure git hooks for all developers
-              if [ -d .git ]; then
-                git config core.hooksPath .githooks
-                echo "Git hooks configured: .githooks/pre-commit"
+              # Auto-install lefthook git hooks
+              if [ -d .git ] && command -v lefthook &> /dev/null; then
+                lefthook install
               fi
             '';
           };
