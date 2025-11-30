@@ -17,7 +17,6 @@ use futures::stream::StreamExt;
 use metrics::{counter, histogram};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::env;
 use std::fmt;
@@ -26,6 +25,7 @@ use std::io::{ErrorKind, Read};
 #[cfg(feature = "async-stream")]
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 #[cfg(feature = "async-stream")]
 use std::task::{Context, Poll};
 use tracing::{debug, instrument, trace};
@@ -55,6 +55,22 @@ pub enum ChunkingError {
 pub enum HashAlgorithm {
     Blake3,
     Sha256,
+}
+
+/// Compute hash of data using the specified algorithm.
+///
+/// This function is marked `#[inline(always)]` to eliminate match overhead
+/// in the hot path. The compiler will inline the function at each call site,
+/// allowing branch prediction to work optimally when the algorithm is known.
+#[inline(always)]
+fn compute_hash(data: &[u8], algorithm: HashAlgorithm) -> [u8; 32] {
+    match algorithm {
+        HashAlgorithm::Blake3 => {
+            let hash = blake3::hash(data);
+            *hash.as_bytes()
+        }
+        HashAlgorithm::Sha256 => crate::hashing::sha256_hash_raw(data),
+    }
 }
 
 /// Metadata for a single chunk emitted by streaming chunkers.
@@ -172,7 +188,66 @@ impl ChunkingOptions {
                 "max_size must be <= 1GB".into(),
             ));
         }
+
+        // Defense-in-depth: Ensure all sizes fit in u32 for FastCDC.
+        // The 1GB check above already prevents this on 64-bit systems,
+        // but we add explicit u32 bounds checks for safety and clarity.
+        if self.min_size > u32::MAX as usize {
+            return Err(ChunkingError::InvalidOptions(format!(
+                "min_size {} exceeds u32::MAX ({}), cannot be used with FastCDC",
+                self.min_size,
+                u32::MAX
+            )));
+        }
+        if self.avg_size > u32::MAX as usize {
+            return Err(ChunkingError::InvalidOptions(format!(
+                "avg_size {} exceeds u32::MAX ({}), cannot be used with FastCDC",
+                self.avg_size,
+                u32::MAX
+            )));
+        }
+        if self.max_size > u32::MAX as usize {
+            return Err(ChunkingError::InvalidOptions(format!(
+                "max_size {} exceeds u32::MAX ({}), cannot be used with FastCDC",
+                self.max_size,
+                u32::MAX
+            )));
+        }
+
         Ok(())
+    }
+
+    /// Safely convert min_size to u32 for FastCDC.
+    ///
+    /// # Panics
+    ///
+    /// This should never panic if `validate()` was called first, as validation
+    /// ensures all sizes fit within u32.
+    #[inline]
+    pub fn min_size_u32(&self) -> u32 {
+        u32::try_from(self.min_size).expect("min_size validated to fit in u32")
+    }
+
+    /// Safely convert avg_size to u32 for FastCDC.
+    ///
+    /// # Panics
+    ///
+    /// This should never panic if `validate()` was called first, as validation
+    /// ensures all sizes fit within u32.
+    #[inline]
+    pub fn avg_size_u32(&self) -> u32 {
+        u32::try_from(self.avg_size).expect("avg_size validated to fit in u32")
+    }
+
+    /// Safely convert max_size to u32 for FastCDC.
+    ///
+    /// # Panics
+    ///
+    /// This should never panic if `validate()` was called first, as validation
+    /// ensures all sizes fit within u32.
+    #[inline]
+    pub fn max_size_u32(&self) -> u32 {
+        u32::try_from(self.max_size).expect("max_size validated to fit in u32")
     }
 }
 
@@ -237,14 +312,7 @@ pub fn chunk_data_with_hash(
 
             let chunk_slice = &data[offset..offset + length];
 
-            let hash_array: [u8; 32] = match hash {
-                HashAlgorithm::Sha256 => {
-                    let mut hasher = Sha256::new();
-                    hasher.update(chunk_slice);
-                    hasher.finalize().into()
-                }
-                HashAlgorithm::Blake3 => blake3::hash(chunk_slice).into(),
-            };
+            let hash_array = compute_hash(chunk_slice, hash);
 
             Ok(ChunkMetadata {
                 hash: hash_array,
@@ -273,6 +341,10 @@ pub struct ChunkStream<R: Read> {
     min_size: usize,
     avg_size: usize,
     max_size: usize,
+    /// Pre-converted u32 values for FastCDC to avoid repeated casts in next()
+    min_size_u32: u32,
+    avg_size_u32: u32,
+    max_size_u32: u32,
     hash: HashAlgorithm,
     position: u64,
     eof: bool,
@@ -281,6 +353,26 @@ pub struct ChunkStream<R: Read> {
 
 static TRACE_SAMPLE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const TRACE_SAMPLE_EVERY: u64 = 1024;
+
+/// Cached metric handles to eliminate per-chunk metric name lookups.
+/// Using `OnceLock` ensures thread-safe one-time initialization.
+struct CachedMetrics {
+    chunks_emitted: metrics::Counter,
+    bytes_processed: metrics::Counter,
+    chunk_size: metrics::Histogram,
+}
+
+static METRICS: OnceLock<CachedMetrics> = OnceLock::new();
+
+/// Returns cached metric handles, initializing them on first call.
+/// This eliminates the overhead of metric name lookups on each chunk emission.
+fn get_metrics() -> &'static CachedMetrics {
+    METRICS.get_or_init(|| CachedMetrics {
+        chunks_emitted: counter!("chunker.chunks_emitted"),
+        bytes_processed: counter!("chunker.bytes_processed"),
+        chunk_size: histogram!("chunker.chunk_size"),
+    })
+}
 const DEFAULT_READ_SLICE_CAP: usize = 16 * 1024 * 1024; // 16 MiB per read to avoid oversized allocations
 const MAX_READ_SLICE_CAP: usize = 256 * 1024 * 1024; // 256 MiB hard ceiling
 const MIN_READ_SLICE_CAP: usize = 4096;
@@ -382,12 +474,23 @@ impl<R: Read> ChunkStream<R> {
         let initial_capacity = std::cmp::min(options.min_size, 64 * 1024);
         let buffer = BytesMut::with_capacity(initial_capacity);
 
+        // Pre-convert sizes to u32 for FastCDC (validation ensures they fit in u32)
+        #[allow(clippy::cast_possible_truncation)]
+        let min_size_u32 = options.min_size as u32;
+        #[allow(clippy::cast_possible_truncation)]
+        let avg_size_u32 = options.avg_size as u32;
+        #[allow(clippy::cast_possible_truncation)]
+        let max_size_u32 = options.max_size as u32;
+
         Ok(Self {
             reader,
             buffer,
             min_size: options.min_size,
             avg_size: options.avg_size,
             max_size: options.max_size,
+            min_size_u32,
+            avg_size_u32,
+            max_size_u32,
             hash,
             position: 0,
             eof: false,
@@ -407,13 +510,15 @@ impl<R: Read> Iterator for ChunkStream<R> {
 
         loop {
             // 1. Try to find chunks in the current buffer
-            if !self.buffer.is_empty() {
-                // Create a FastCDC iterator over the buffer
+            // Early-exit: skip FastCDC iteration if buffer is smaller than min_size and not at EOF
+            // FastCDC cannot produce a chunk smaller than min_size unless it's the final chunk.
+            if !self.buffer.is_empty() && (self.buffer.len() >= self.min_size || self.eof) {
+                // Create a FastCDC iterator over the buffer using cached u32 params
                 let cdc = FastCDC::new(
                     &self.buffer,
-                    self.min_size as u32,
-                    self.avg_size as u32,
-                    self.max_size as u32,
+                    self.min_size_u32,
+                    self.avg_size_u32,
+                    self.max_size_u32,
                 );
 
                 // Collect all valid cut points in the current buffer
@@ -480,19 +585,13 @@ impl<R: Read> Iterator for ChunkStream<R> {
 
                         let chunk_slice = batch_data.slice(offset..offset + len);
 
-                        // Metrics (thread-safe)
-                        counter!("chunker.chunks_emitted").increment(1);
-                        counter!("chunker.bytes_processed").increment(len as u64);
-                        histogram!("chunker.chunk_size").record(len as f64);
+                        // Metrics (thread-safe, using cached handles)
+                        let m = get_metrics();
+                        m.chunks_emitted.increment(1);
+                        m.bytes_processed.increment(len as u64);
+                        m.chunk_size.record(len as f64);
 
-                        let hash_array: [u8; 32] = match hash_algo {
-                            HashAlgorithm::Sha256 => {
-                                let mut hasher = Sha256::new();
-                                hasher.update(&chunk_slice);
-                                hasher.finalize().into()
-                            }
-                            HashAlgorithm::Blake3 => blake3::hash(&chunk_slice).into(),
-                        };
+                        let hash_array = compute_hash(&chunk_slice, hash_algo);
 
                         let chunk_offset = current_position + offset as u64;
 
@@ -541,19 +640,13 @@ impl<R: Read> Iterator for ChunkStream<R> {
                 let len = self.buffer.len();
                 let chunk_data = self.buffer.split_to(len).freeze();
 
-                // Metrics
-                counter!("chunker.chunks_emitted").increment(1);
-                counter!("chunker.bytes_processed").increment(len as u64);
-                histogram!("chunker.chunk_size").record(len as f64);
+                // Metrics (using cached handles)
+                let m = get_metrics();
+                m.chunks_emitted.increment(1);
+                m.bytes_processed.increment(len as u64);
+                m.chunk_size.record(len as f64);
 
-                let hash_array: [u8; 32] = match self.hash {
-                    HashAlgorithm::Sha256 => {
-                        let mut hasher = Sha256::new();
-                        hasher.update(&chunk_data);
-                        hasher.finalize().into()
-                    }
-                    HashAlgorithm::Blake3 => blake3::hash(&chunk_data).into(),
-                };
+                let hash_array = compute_hash(&chunk_data, self.hash);
 
                 let chunk_offset = self.position;
                 self.position += len as u64;
@@ -585,11 +678,11 @@ impl<R: Read> Iterator for ChunkStream<R> {
                 Ok(0) => {
                     self.eof = true;
                     self.buffer.truncate(start); // Remove the extra zeros
-                    // Loop again to process remainder
+                                                 // Loop again to process remainder
                 }
                 Ok(n) => {
                     self.buffer.truncate(start + n); // Keep only what we read
-                    // Loop again to process
+                                                     // Loop again to process
                 }
                 Err(e) => {
                     if e.kind() == ErrorKind::Interrupted {
@@ -698,18 +791,12 @@ impl<R: AsyncRead + Unpin + Send + 'static> ChunkStreamAsync<R> {
                         if len != buffer.len() || eof || len >= options.max_size {
                             let chunk_data = buffer.split_to(len).freeze();
 
-                            counter!("chunker.chunks_emitted").increment(1);
-                            counter!("chunker.bytes_processed").increment(len as u64);
-                            histogram!("chunker.chunk_size").record(len as f64);
+                            let m = get_metrics();
+                            m.chunks_emitted.increment(1);
+                            m.bytes_processed.increment(len as u64);
+                            m.chunk_size.record(len as f64);
 
-                            let hash_array: [u8; 32] = match hash {
-                                HashAlgorithm::Sha256 => {
-                                    let mut hasher = Sha256::new();
-                                    hasher.update(&chunk_data);
-                                    hasher.finalize().into()
-                                }
-                                HashAlgorithm::Blake3 => blake3::hash(&chunk_data).into(),
-                            };
+                            let hash_array = compute_hash(&chunk_data, hash);
 
                             let chunk_offset = position;
                             position += len as u64;
@@ -740,18 +827,12 @@ impl<R: AsyncRead + Unpin + Send + 'static> ChunkStreamAsync<R> {
                     let len = buffer.len();
                     let chunk_data = buffer.split_to(len).freeze();
 
-                    counter!("chunker.chunks_emitted").increment(1);
-                    counter!("chunker.bytes_processed").increment(len as u64);
-                    histogram!("chunker.chunk_size").record(len as f64);
+                    let m = get_metrics();
+                    m.chunks_emitted.increment(1);
+                    m.bytes_processed.increment(len as u64);
+                    m.chunk_size.record(len as f64);
 
-                    let hash_array: [u8; 32] = match hash {
-                        HashAlgorithm::Sha256 => {
-                            let mut hasher = Sha256::new();
-                            hasher.update(&chunk_data);
-                            hasher.finalize().into()
-                        }
-                        HashAlgorithm::Blake3 => blake3::hash(&chunk_data).into(),
-                    };
+                    let hash_array = compute_hash(&chunk_data, hash);
 
                     let chunk_offset = position;
                     position += len as u64;
@@ -1090,5 +1171,115 @@ mod tests {
         StdHash::hash(&chunk_b, &mut hasher_b);
 
         assert_eq!(hasher_a.finish(), hasher_b.finish());
+    }
+
+    // Tests for P1-T02: Integer overflow protection for FastCDC size casting (BUG-002)
+
+    #[test]
+    fn test_u32_overflow_validation_at_boundary() {
+        // Test at u32::MAX boundary - should pass since it's within u32
+        // But will fail the 1GB check first (1GB < u32::MAX)
+        let result = ChunkingOptions::resolve(
+            Some(64),
+            Some(1024),
+            Some(1024 * 1024 * 1024), // 1GB - at the limit
+        );
+        assert!(result.is_ok());
+
+        // Verify the helper methods work for valid options
+        let options = result.unwrap();
+        assert_eq!(options.min_size_u32(), 64);
+        assert_eq!(options.avg_size_u32(), 1024);
+        assert_eq!(options.max_size_u32(), 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_u32_overflow_rejected_max_size_exceeds_1gb() {
+        // max_size > 1GB should be rejected (1GB check triggers before u32 check)
+        let result = ChunkingOptions::resolve(
+            Some(64),
+            Some(1024),
+            Some(1024 * 1024 * 1024 + 1), // 1GB + 1 byte
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ChunkingError::InvalidOptions(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("1GB"),
+            "Error message should mention 1GB limit: {msg}"
+        );
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn test_u32_overflow_protection_would_trigger_for_huge_values() {
+        // This test documents that on 64-bit systems, the 1GB check prevents
+        // the u32 overflow check from ever triggering in practice.
+        // The u32::MAX is ~4.3GB, and we limit max_size to 1GB.
+        // This test verifies the defense-in-depth check exists.
+
+        // Create options manually to bypass resolve() and test validate() directly
+        let huge_options = ChunkingOptions {
+            min_size: (u32::MAX as usize) + 1, // Exceeds u32::MAX
+            avg_size: (u32::MAX as usize) + 2,
+            max_size: (u32::MAX as usize) + 3,
+        };
+
+        // validate() should reject this (1GB check triggers first, but u32 check is there)
+        let result = huge_options.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_size_conversion_helpers_after_validation() {
+        // After successful validation, the helper methods should work correctly
+        let options = ChunkingOptions::resolve(Some(1024), Some(4096), Some(8192)).unwrap();
+
+        // These should not panic because validation ensures sizes fit in u32
+        assert_eq!(options.min_size_u32(), 1024);
+        assert_eq!(options.avg_size_u32(), 4096);
+        assert_eq!(options.max_size_u32(), 8192);
+    }
+
+    #[test]
+    fn test_error_message_clarity_for_invalid_options() {
+        // Verify error messages are clear and helpful
+        let result = ChunkingOptions::resolve(Some(32), Some(64), Some(128)); // min_size < 64
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("min_size"),
+            "Error should mention min_size: {msg}"
+        );
+        assert!(
+            msg.contains("64"),
+            "Error should mention the limit 64: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_valid_sizes_at_various_boundaries() {
+        // Test with exact boundary values that should be valid
+        let test_cases = [
+            (64, 64, 64),                                   // All at minimum
+            (64, 1024, 4096),                               // Typical small
+            (256 * 1024, 1024 * 1024, 4 * 1024 * 1024),     // Default values
+            (1024 * 1024, 1024 * 1024, 1024 * 1024 * 1024), // Max allowed
+        ];
+
+        for (min, avg, max) in test_cases {
+            let result = ChunkingOptions::resolve(Some(min), Some(avg), Some(max));
+            assert!(
+                result.is_ok(),
+                "Should accept min={min}, avg={avg}, max={max}"
+            );
+
+            let options = result.unwrap();
+            // Verify conversions don't panic
+            let _ = options.min_size_u32();
+            let _ = options.avg_size_u32();
+            let _ = options.max_size_u32();
+        }
     }
 }

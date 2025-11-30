@@ -1,7 +1,7 @@
 use chunker::{compression, hashing};
-use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
-use rand_chacha::ChaCha8Rng;
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use rand_chacha::rand_core::{RngCore, SeedableRng};
+use rand_chacha::ChaCha8Rng;
 
 fn benchmark_hashing(c: &mut Criterion) {
     let mut group = c.benchmark_group("hashing");

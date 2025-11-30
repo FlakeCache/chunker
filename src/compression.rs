@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use tracing::{debug, instrument, warn};
 use xz2::read::XzDecoder;
 

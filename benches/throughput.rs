@@ -3,7 +3,7 @@
 #![allow(clippy::panic)]
 
 use chunker::{chunking::ChunkStream, compression::compress_zstd, hashing::sha256_hash};
-use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use fastcdc::v2020::FastCDC;
 use std::io::Cursor;
 

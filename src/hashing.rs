@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
 #[derive(Debug, thiserror::Error, Clone, Copy)]
 pub enum HashingError {
@@ -24,6 +24,7 @@ const NIX_BASE32_INVERSE: [u8; 256] = {
 
 /// Compute SHA256 hash of data
 /// Returns: hex string
+#[inline]
 #[must_use]
 pub fn sha256_hash(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -34,6 +35,7 @@ pub fn sha256_hash(data: &[u8]) -> String {
 
 /// Compute SHA256 hash of data
 /// Returns: raw bytes
+#[inline]
 #[must_use]
 pub fn sha256_hash_raw(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
@@ -43,6 +45,7 @@ pub fn sha256_hash_raw(data: &[u8]) -> [u8; 32] {
 
 /// Compute BLAKE3 hash of data
 /// Returns: hex string
+#[inline]
 #[must_use]
 pub fn blake3_hash(data: &[u8]) -> String {
     let hash = blake3::hash(data);
