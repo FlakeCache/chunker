@@ -133,8 +133,13 @@ jobs:
 
       - name: Cargo clippy
         run: |
-          nix develop .#default --command bash -c "\
-            cargo clippy --all-targets --features \"${{ matrix.features }}\" -- -D warnings\
+          FEATURES="${{ matrix.features }}"
+          nix develop .#default --command bash -c "
+            if [ -n \"$FEATURES\" ]; then
+              cargo clippy --all-targets --features $FEATURES -- -D warnings
+            else
+              cargo clippy --all-targets -- -D warnings
+            fi
           "
 
   fmt:
