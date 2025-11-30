@@ -89,11 +89,11 @@
           # Default shell (includes everything for local dev)
           default = pkgs.mkShell {
             buildInputs = baseTools ++ [
-              (mkRust [ 
-                "x86_64-unknown-linux-gnu" 
+              (mkRust [
+                "x86_64-unknown-linux-gnu"
                 "x86_64-unknown-linux-musl"
-                "aarch64-unknown-linux-gnu" 
-                "aarch64-apple-darwin" 
+                "aarch64-unknown-linux-gnu"
+                "aarch64-apple-darwin"
                 "x86_64-pc-windows-msvc"
               ])
               pkgs.cargo-fuzz
@@ -103,6 +103,14 @@
               pkgs.cargo-zigbuild
               pkgs.cargo-cross
             ];
+
+            shellHook = ''
+              # Auto-configure git hooks for all developers
+              if [ -d .git ]; then
+                git config core.hooksPath .githooks
+                echo "Git hooks configured: .githooks/pre-commit"
+              fi
+            '';
           };
         };
       }
