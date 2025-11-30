@@ -1,11 +1,177 @@
 use std::io::{Read, Write};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use tracing::{debug, instrument, warn};
+use xz2::read::XzDecoder;
 
 /// Scratch buffers that can be reused to reduce allocations in tight loops.
+///
+/// # Example
+///
+/// ```rust
+/// use chunker::compression::{CompressionScratch, CompressionStrategy};
+///
+/// let mut scratch = CompressionScratch::new();
+///
+/// // Compress multiple payloads reusing the same buffer
+/// for data in [b"payload1".as_slice(), b"payload2".as_slice()] {
+///     let compressed = scratch.compress(data, CompressionStrategy::Balanced).unwrap();
+///     // use compressed...
+/// }
+///
+/// // Decompress with auto-detection
+/// let compressed = chunker::compression::compress_zstd(b"test data", None).unwrap();
+/// let decompressed = scratch.decompress_auto(&compressed).unwrap();
+/// ```
 #[derive(Debug, Default)]
 pub struct CompressionScratch {
-    pub output: Vec<u8>,
+    /// Reusable output buffer for compression/decompression operations.
+    output: Vec<u8>,
+}
+
+impl CompressionScratch {
+    /// Create a new scratch buffer.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { output: Vec::new() }
+    }
+
+    /// Create a scratch buffer with pre-allocated capacity.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            output: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// Compress data using the specified strategy, reusing the internal buffer.
+    ///
+    /// Returns a slice of the compressed data. The slice is valid until the next
+    /// call to any method on this `CompressionScratch`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompressionError` if compression fails.
+    pub fn compress(
+        &mut self,
+        data: &[u8],
+        strategy: CompressionStrategy,
+    ) -> Result<&[u8], CompressionError> {
+        self.output.clear();
+        match strategy {
+            CompressionStrategy::Fastest => compress_lz4_into(data, &mut self.output)?,
+            CompressionStrategy::Balanced => {
+                compress_zstd_into(data, None, None, &mut self.output)?;
+            }
+            CompressionStrategy::Smallest => {
+                // XZ doesn't have an _into variant, so we compress and swap
+                let compressed = compress_xz(data, None)?;
+                self.output = compressed;
+            }
+        }
+        Ok(&self.output)
+    }
+
+    /// Compress data using zstd with optional level and dictionary.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompressionError` if compression fails.
+    pub fn compress_zstd(
+        &mut self,
+        data: &[u8],
+        level: Option<i32>,
+        dict: Option<&zstd::dict::EncoderDictionary>,
+    ) -> Result<&[u8], CompressionError> {
+        compress_zstd_into(data, level, dict, &mut self.output)?;
+        Ok(&self.output)
+    }
+
+    /// Compress data using LZ4.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompressionError` if compression fails.
+    pub fn compress_lz4(&mut self, data: &[u8]) -> Result<&[u8], CompressionError> {
+        compress_lz4_into(data, &mut self.output)?;
+        Ok(&self.output)
+    }
+
+    /// Decompress data with automatic format detection.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompressionError` if decompression fails or format is unknown.
+    pub fn decompress_auto(&mut self, data: &[u8]) -> Result<&[u8], CompressionError> {
+        self.output.clear();
+        decompress_auto_into(data, &mut self.output)?;
+        Ok(&self.output)
+    }
+
+    /// Decompress zstd data with optional dictionary.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompressionError` if decompression fails.
+    pub fn decompress_zstd(
+        &mut self,
+        data: &[u8],
+        dict: Option<&zstd::dict::DecoderDictionary>,
+    ) -> Result<&[u8], CompressionError> {
+        self.output.clear();
+        decompress_zstd_with_dict_into(data, &mut self.output, dict)?;
+        Ok(&self.output)
+    }
+
+    /// Decompress LZ4 data.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompressionError` if decompression fails.
+    pub fn decompress_lz4(&mut self, data: &[u8]) -> Result<&[u8], CompressionError> {
+        self.output.clear();
+        decompress_lz4_into(data, &mut self.output)?;
+        Ok(&self.output)
+    }
+
+    /// Decompress XZ data.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompressionError` if decompression fails.
+    pub fn decompress_xz(&mut self, data: &[u8]) -> Result<&[u8], CompressionError> {
+        self.output.clear();
+        decompress_xz_into(data, &mut self.output)?;
+        Ok(&self.output)
+    }
+
+    /// Decompress bzip2 data.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompressionError` if decompression fails.
+    pub fn decompress_bzip2(&mut self, data: &[u8]) -> Result<&[u8], CompressionError> {
+        self.output.clear();
+        decompress_bzip2_into(data, &mut self.output)?;
+        Ok(&self.output)
+    }
+
+    /// Get the current capacity of the internal buffer.
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        self.output.capacity()
+    }
+
+    /// Clear the internal buffer without deallocating.
+    pub fn clear(&mut self) {
+        self.output.clear();
+    }
+
+    /// Take ownership of the internal buffer, replacing it with an empty one.
+    ///
+    /// This is useful when you need to keep the result and continue using the scratch.
+    pub fn take_output(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.output)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -136,13 +302,11 @@ impl<R: Read + Send + 'static> AutoDecompressReader<R> {
         // XZ: FD 37 7A 58 5A 00
         if header_slice.starts_with(&[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]) {
             debug!("detected_format_xz_stream");
-            // TODO: lzma-rs does not support streaming read yet.
-            // let decoder = xz2::read::XzDecoder::new(stream);
-            // return Ok(Self {
-            //     inner: Box::new(decoder.take(MAX_DECOMPRESSED_SIZE)),
-            //     _marker: std::marker::PhantomData,
-            // });
-            warn!("xz_stream_decompression_not_supported_with_lzma_rs");
+            let decoder = XzDecoder::new(stream);
+            return Ok(Self {
+                inner: Box::new(decoder.take(MAX_DECOMPRESSED_SIZE)),
+                _marker: std::marker::PhantomData,
+            });
         }
 
         if header_slice.starts_with(b"BZh") {
@@ -763,6 +927,20 @@ mod tests {
     }
 
     #[test]
+    fn test_auto_decompress_reader_xz_stream() -> Result<(), std::io::Error> {
+        let data = b"streaming xz decompression test payload";
+        let compressed = compress_xz(data, None).unwrap();
+
+        let mut reader = AutoDecompressReader::new(std::io::Cursor::new(compressed))?;
+        let mut buffer = Vec::new();
+        let _ = reader.read_to_end(&mut buffer)?;
+
+        assert_eq!(buffer, data);
+
+        Ok(())
+    }
+
+    #[test]
     fn test_zstd_worker() -> Result<(), String> {
         let (tx, rx, handle) = spawn_zstd_worker(10);
 
@@ -785,6 +963,89 @@ mod tests {
         assert_eq!(decompressed, data);
 
         handle.join().map_err(|_| "worker panicked".to_string())?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_compression_scratch_zstd_roundtrip() -> Result<(), CompressionError> {
+        let mut scratch = CompressionScratch::new();
+        let data = b"scratch buffer zstd test payload";
+
+        let compressed = scratch.compress_zstd(data, None, None)?;
+        let compressed_copy = compressed.to_vec();
+
+        let decompressed = scratch.decompress_zstd(&compressed_copy, None)?;
+        assert_eq!(decompressed, data);
+        Ok(())
+    }
+
+    #[test]
+    fn test_compression_scratch_lz4_roundtrip() -> Result<(), CompressionError> {
+        let mut scratch = CompressionScratch::new();
+        let data = b"scratch buffer lz4 test payload";
+
+        let compressed = scratch.compress_lz4(data)?;
+        let compressed_copy = compressed.to_vec();
+
+        let decompressed = scratch.decompress_lz4(&compressed_copy)?;
+        assert_eq!(decompressed, data);
+        Ok(())
+    }
+
+    #[test]
+    fn test_compression_scratch_strategy() -> Result<(), CompressionError> {
+        let mut scratch = CompressionScratch::new();
+        let data = b"scratch buffer strategy test payload";
+
+        // Test all strategies
+        for strategy in [
+            CompressionStrategy::Fastest,
+            CompressionStrategy::Balanced,
+            CompressionStrategy::Smallest,
+        ] {
+            let compressed = scratch.compress(data, strategy)?;
+            let compressed_copy = compressed.to_vec();
+
+            let decompressed = scratch.decompress_auto(&compressed_copy)?;
+            assert_eq!(decompressed, data, "Failed for strategy {:?}", strategy);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_compression_scratch_reuses_buffer() -> Result<(), CompressionError> {
+        let mut scratch = CompressionScratch::with_capacity(1024);
+
+        // Compress something to grow the buffer
+        let data = b"some test data to compress";
+        let _ = scratch.compress_zstd(data, None, None)?;
+
+        let capacity_after_first = scratch.capacity();
+        assert!(capacity_after_first > 0);
+
+        // Compress again - capacity should not decrease
+        let _ = scratch.compress_zstd(data, None, None)?;
+        assert!(scratch.capacity() >= capacity_after_first);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_compression_scratch_take_output() -> Result<(), CompressionError> {
+        let mut scratch = CompressionScratch::new();
+        let data = b"take output test";
+
+        let _ = scratch.compress_zstd(data, None, None)?;
+        let output = scratch.take_output();
+
+        // Output should contain the compressed data
+        assert!(!output.is_empty());
+
+        // Scratch should now be empty
+        assert_eq!(scratch.capacity(), 0);
+
+        // Verify we can still use scratch after take
+        let _ = scratch.compress_zstd(data, None, None)?;
         Ok(())
     }
 }

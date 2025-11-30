@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::env;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read};
 #[cfg(feature = "async-stream")]
 use std::pin::Pin;
@@ -57,7 +58,7 @@ pub enum HashAlgorithm {
 }
 
 /// Metadata for a single chunk emitted by streaming chunkers.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkMetadata {
     /// Hash of the chunk payload (32 bytes) using the configured [`HashAlgorithm`].
     /// Using raw bytes is more efficient than hex strings for storage/transmission.
@@ -77,6 +78,22 @@ impl ChunkMetadata {
     /// Returns the hash as a hex string.
     pub fn hash_hex(&self) -> String {
         hex::encode(self.hash)
+    }
+}
+
+impl PartialEq for ChunkMetadata {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash && self.offset == other.offset && self.length == other.length
+    }
+}
+
+impl Eq for ChunkMetadata {}
+
+impl Hash for ChunkMetadata {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.hash.hash(state);
+        self.offset.hash(state);
+        self.length.hash(state);
     }
 }
 
@@ -278,9 +295,8 @@ fn effective_read_slice_cap() -> usize {
     let from_env = env::var("CHUNKER_READ_SLICE_CAP_BYTES")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .filter(|&v| v >= MIN_READ_SLICE_CAP && v <= MAX_READ_SLICE_CAP);
-    let cap = from_env.unwrap_or(DEFAULT_READ_SLICE_CAP);
-    cap
+        .filter(|&v| (MIN_READ_SLICE_CAP..=MAX_READ_SLICE_CAP).contains(&v));
+    from_env.unwrap_or(DEFAULT_READ_SLICE_CAP)
 }
 
 #[cfg(feature = "async-stream")]
@@ -451,7 +467,10 @@ impl<R: Read> Iterator for ChunkStream<R> {
                         let offset = chunk.offset;
 
                         // Safety check with overflow protection
-                        if offset.checked_add(len).map_or(true, |end| end > batch_data.len()) {
+                        if offset
+                            .checked_add(len)
+                            .is_none_or(|end| end > batch_data.len())
+                        {
                             return Err(ChunkingError::Bounds {
                                 data_len: batch_data.len(),
                                 offset,
@@ -1037,9 +1056,39 @@ mod tests {
     fn test_overflow_protection_in_chunking() -> Result<(), ChunkingError> {
         // Test that bounds checking prevents overflow
         let data = vec![0u8; 100];
-        let result = chunk_data(&data, Some(50), Some(75), Some(200));
+        let result = chunk_data(&data, Some(1024), Some(4096), Some(4 * 1024 * 1024));
         // Should succeed with valid options
         assert!(result.is_ok());
         Ok(())
+    }
+
+    #[test]
+    fn chunk_metadata_equality_ignores_payload() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hash as StdHash;
+
+        let chunk_a = ChunkMetadata {
+            hash: [1_u8; 32],
+            offset: 10,
+            length: 5,
+            payload: Bytes::from_static(b"payload-a"),
+        };
+
+        let chunk_b = ChunkMetadata {
+            hash: [1_u8; 32],
+            offset: 10,
+            length: 5,
+            payload: Bytes::from_static(b"payload-b"),
+        };
+
+        assert_eq!(chunk_a, chunk_b);
+
+        let mut hasher_a = DefaultHasher::new();
+        StdHash::hash(&chunk_a, &mut hasher_a);
+
+        let mut hasher_b = DefaultHasher::new();
+        StdHash::hash(&chunk_b, &mut hasher_b);
+
+        assert_eq!(hasher_a.finish(), hasher_b.finish());
     }
 }
