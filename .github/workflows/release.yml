@@ -19,14 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Nix
-        uses: cachix/install-nix-action@v27
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ci-default
+        uses: FlakeCache/nix-installer@v1
 
       - name: Run tests and clippy
         run: |
@@ -50,9 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Nix
-        uses: cachix/install-nix-action@v27
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
+        uses: FlakeCache/nix-installer@v1
 
       - name: Get Version
         id: version
