@@ -139,7 +139,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: FlakeCache/crate-index
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.CRATE_INDEX_TOKEN }}
           path: crate-index
 
       - name: Update index
