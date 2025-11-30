@@ -15,7 +15,7 @@ env:
 jobs:
   tests:
     name: Test & Clippy (native)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - name: Install Nix
@@ -43,7 +43,7 @@ jobs:
   package-crate:
     name: Package Crate
     needs: tests
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     outputs:
       version: ${{ steps.version.outputs.version }}
       checksum: ${{ steps.package.outputs.checksum }}
@@ -111,7 +111,7 @@ jobs:
   publish-release:
     name: Publish to GitHub Release
     needs: [package-crate]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/download-artifact@v4
@@ -132,7 +132,7 @@ jobs:
   update-index:
     name: Update Crate Index
     needs: [package-crate, publish-release]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Checkout crate-index
