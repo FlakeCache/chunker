@@ -1,6 +1,6 @@
 [package]
 name = "chunker"
-version = "0.1.0-beta3"
+version = "0.1.0-beta4"
 authors = ["FlakeCache Team"]
 edition = "2024"
 description = "High-performance content-defined chunking for Nix NARs (Rustler NIF + standalone library)"
@@ -10,6 +10,16 @@ documentation = "https://github.com/FlakeCache/chunker"
 readme = "README.md"
 categories = ["algorithms", "compression", "cryptography"]
 keywords = ["nix", "nar", "hash", "sign", "compress", "chunk", "fastcdc", "rustler", "nif"]
+include = [
+  "src/**",
+  "benches/**",
+  "tests/**",
+  "README.md",
+  "LICENSE",
+  "Cargo.toml",
+  "Cargo.lock",
+  "priv/native/libchunker_nif-x86_64-linux.so"
+]
 
 [profile.release]
 lto = true

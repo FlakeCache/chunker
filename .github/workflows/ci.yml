@@ -153,6 +153,12 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Build NIF (linux x86_64) and stage into crate
+        run: |
+          cargo build --release --features nif
+          mkdir -p priv/native
+          cp target/release/libchunker.so priv/native/libchunker_nif-x86_64-linux.so
+
       - name: Configure private registry
         run: |
           mkdir -p ~/.cargo
