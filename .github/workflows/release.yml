@@ -37,13 +37,11 @@ jobs:
             cargo clippy --all-targets --features telemetry -- -D warnings
             cargo clippy --all-targets --features nif -- -D warnings
             cargo fmt --all -- --check
-            cargo build --release --all-features --bin chunker
-            stat -c \"%n %s\" target/release/chunker > size-default.txt
           "
 
   package-crate:
     name: Package Crate
-    needs: build-release
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,11 +49,6 @@ jobs:
         uses: cachix/install-nix-action@v27
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-      - name: Download Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
       - name: Package
         run: |
           VERSION="${GITHUB_REF_NAME}"
@@ -63,16 +56,10 @@ jobs:
             # Set version from tag
             sed -i \"s/^version = .*/version = \\\"${VERSION#v}\\\"/\" Cargo.toml
 
-            mkdir -p priv/native bin dist
-            cp artifacts/chunker-${VERSION}-x86_64-unknown-linux-gnu dist/chunker-${VERSION}-x86_64-unknown-linux-gnu || true
-            cp artifacts/chunker-loader-${VERSION}-x86_64-unknown-linux-gnu dist/chunker-loader-${VERSION}-x86_64-unknown-linux-gnu || true
-            # Build NIF separately
+            mkdir -p priv/native
+            # Build NIF and stage into crate
             cargo build --release --features nif --no-default-features
             cp target/release/libchunker.so priv/native/libchunker_nif-x86_64-linux.so
-            cp artifacts/chunker-${VERSION}-x86_64-unknown-linux-gnu bin/chunker || true
-            cp artifacts/chunker-loader-${VERSION}-x86_64-unknown-linux-gnu bin/loader || true
-            cargo build --release --bin chunker --features telemetry
-            cp target/release/chunker bin/chunker_telemetry
             cargo package --allow-dirty
           "
       - name: Upload Crate
@@ -81,101 +68,9 @@ jobs:
           name: crate
           path: target/package/*.crate
 
-  build-release:
-    name: Build ${{ matrix.variant }}
-    needs: tests
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    strategy:
-      matrix:
-        include:
-          # Minimal matrix: we only need a Linux x86_64 build for the NIF
-          - variant: "generic"
-            rustflags: ""
-            suffix: "x86_64-unknown-linux-gnu"
-            build_loader: true
-            target: "x86_64-unknown-linux-gnu"
-            use_cross: false
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v27
-        with:
-          nix_path: nixpkgs=channel:nixos-unstable
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: release-${{ matrix.target }}
-
-      - name: Build & Sign
-        run: |
-          # Default to 'default' shell if not specified (for backward compat)
-          SHELL_NAME="${{ matrix.nix_shell || 'default' }}"
-          
-          nix develop .#$SHELL_NAME --command bash -c "
-            set -e
-            echo '🏗️ Building ${{ matrix.variant }}...'
-            
-            if [ '${{ matrix.use_cross }}' = 'true' ]; then
-              cross build --release --target ${{ matrix.target }}
-            elif [ '${{ matrix.use_zig }}' = 'true' ]; then
-              cargo zigbuild --release --target ${{ matrix.target }}
-            else
-              cargo build --release --target ${{ matrix.target }}
-            fi
-            
-            # Prepare Artifacts
-            mkdir -p dist
-            if [[ '${{ matrix.target }}' == *'windows'* ]]; then EXT='.exe'; else EXT=''; fi
-            SRC_DIR='target/${{ matrix.target }}/release'
-            
-            VERSION="${{ github.ref_name }}"
-            
-            # Copy Binary
-            cp \$SRC_DIR/chunker\$EXT dist/chunker-\$VERSION-${{ matrix.suffix }}\$EXT
-            
-            # Copy Loader
-            if [ '${{ matrix.build_loader }}' = 'true' ]; then
-              cp \$SRC_DIR/loader\$EXT dist/chunker-loader-\$VERSION-${{ matrix.suffix }}\$EXT
-            fi
-            
-            # 🛡️ Generate SBOM (Software Bill of Materials)
-            echo '📝 Generating SBOM...'
-            syft scan file:dist/chunker-\$VERSION-${{ matrix.suffix }}\$EXT -o spdx-json=dist/chunker-\$VERSION-${{ matrix.suffix }}.spdx.json
-
-            # Checksums for integrity verification
-            (cd dist && sha256sum * > SHA256SUMS)
-
-            # Size report for regression tracking
-            stat -c \"%n %s\" dist/* > dist/SIZE.txt
-
-            # Compress artifacts (keep originals for convenience)
-            (cd dist && for f in *; do if [ -f \"$f\" ]; then zstd -19 --keep \"$f\"; fi; done)
-            
-            # 🔐 Sign Artifacts (using Cosign keyless / OIDC)
-            # Note: In a real run, this requires ID_TOKEN permissions.
-            # For self-hosted without OIDC, you might use a key file.
-            # echo '✍️ Signing...'
-            # cosign sign-blob --yes dist/chunker-${{ matrix.suffix }}\$EXT --bundle dist/chunker-${{ matrix.suffix }}.sig
-          "
-        env:
-          RUSTFLAGS: ${{ matrix.rustflags }}
-          # COSIGN_EXPERIMENTAL: "1" # Needed for keyless signing
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: chunker-${{ matrix.suffix }}
-          path: dist/
-
   publish-release:
     name: Publish to GitHub Release
-    needs: [build-release, package-crate]
+    needs: [package-crate]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -190,10 +85,6 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            artifacts/*.tar.gz
-            artifacts/*.zst
-            artifacts/*.spdx.json
-            artifacts/SHA256SUMS
-            artifacts/SIZE.txt
+            artifacts/*.crate
           fail_on_unmatched_files: false
           generate_release_notes: true
