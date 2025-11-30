@@ -1,6 +1,6 @@
 [package]
 name = "chunker"
-version = "0.1.0-beta2"
+version = "0.1.0-beta3"
 authors = ["FlakeCache Team"]
 edition = "2024"
 description = "High-performance content-defined chunking for Nix NARs (Rustler NIF + standalone library)"
