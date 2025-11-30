@@ -463,10 +463,10 @@ pub fn decompress_xz_into(data: &[u8], output: &mut Vec<u8>) -> Result<(), Compr
         written: u64,
     }
 
-    impl<'a> Write for LimitedWriter<'a> {
+    impl Write for LimitedWriter<'_> {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             if self.written + buf.len() as u64 > self.limit {
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, "SizeExceeded"));
+                return Err(std::io::Error::other("SizeExceeded"));
             }
             let n = self.inner.write(buf)?;
             self.written += n as u64;
