@@ -71,107 +71,13 @@ jobs:
     strategy:
       matrix:
         include:
-          # 1. Generic (Portable)
+          # Minimal matrix: we only need a Linux x86_64 build for the NIF
           - variant: "generic"
             rustflags: ""
             suffix: "x86_64-unknown-linux-gnu"
             build_loader: true
             target: "x86_64-unknown-linux-gnu"
             use_cross: false
-          
-          # 2. x86-64-v3 (Haswell+) - AVX2
-          - variant: "v3"
-            rustflags: "-C target-cpu=x86-64-v3"
-            suffix: "x86_64-unknown-linux-gnu-v3"
-            build_loader: false
-            target: "x86_64-unknown-linux-gnu"
-            use_cross: false
-
-          # 3. x86-64-v4 (Skylake-X/Zen4+) - AVX-512
-          - variant: "v4"
-            rustflags: "-C target-cpu=x86-64-v4"
-            suffix: "x86_64-unknown-linux-gnu-v4"
-            build_loader: false
-            target: "x86_64-unknown-linux-gnu"
-            use_cross: false
-
-          # 4. ARM64 Generic (Linux)
-          - variant: "arm64-generic"
-            rustflags: ""
-            suffix: "aarch64-unknown-linux-gnu"
-            build_loader: true
-            target: "aarch64-unknown-linux-gnu"
-            use_cross: false
-            use_zig: true
-
-          # 5. ARM64 SVE (Linux)
-          - variant: "arm64-sve"
-            rustflags: "-C target-feature=+sve"
-            suffix: "aarch64-unknown-linux-gnu-sve"
-            build_loader: false
-            target: "aarch64-unknown-linux-gnu"
-            use_cross: false
-            use_zig: true
-
-          # 6. macOS ARM64 (Apple Silicon)
-          # Cross-compiled from Linux using cargo-zigbuild
-          - variant: "macos-arm64"
-            rustflags: ""
-            suffix: "aarch64-apple-darwin"
-            build_loader: true
-            target: "aarch64-apple-darwin"
-            use_cross: false
-            use_zig: true
-
-          # 7. Windows x86_64 (MSVC)
-          # Cross-compiled from Linux using cargo-zigbuild
-          - variant: "windows-x64"
-            rustflags: ""
-            suffix: "x86_64-pc-windows-msvc"
-            build_loader: true
-            target: "x86_64-pc-windows-msvc"
-            use_cross: false
-            use_zig: true
-
-          # 8. Windows ARM64 (MSVC)
-          - variant: "windows-arm64"
-            rustflags: ""
-            suffix: "aarch64-pc-windows-msvc"
-            build_loader: true
-            target: "aarch64-pc-windows-msvc"
-            use_cross: false
-            use_zig: true
-            nix_shell: "cross-windows"
-
-          # 9. Linux Musl (Static) - Alpine / Scratch
-          - variant: "linux-musl"
-            rustflags: "-C target-feature=+crt-static"
-            suffix: "x86_64-unknown-linux-musl"
-            build_loader: false
-            target: "x86_64-unknown-linux-musl"
-            use_cross: false
-            use_zig: true
-            nix_shell: "linux"
-
-          # 10. Linux ARMv7 (IoT / Raspberry Pi 2/3)
-          - variant: "linux-armv7"
-            rustflags: ""
-            suffix: "armv7-unknown-linux-gnueabihf"
-            build_loader: false
-            target: "armv7-unknown-linux-gnueabihf"
-            use_cross: false
-            use_zig: true
-            nix_shell: "cross-linux"
-
-          # 11. Linux RISC-V (VisionFive 2 / Server)
-          - variant: "linux-riscv64"
-            rustflags: ""
-            suffix: "riscv64gc-unknown-linux-gnu"
-            build_loader: false
-            target: "riscv64gc-unknown-linux-gnu"
-            use_cross: false
-            use_zig: true
-            nix_shell: "cross-linux"
 
     steps:
       - uses: actions/checkout@v4
