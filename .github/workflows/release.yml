@@ -53,6 +53,14 @@ jobs:
       - name: Package
         run: |
           nix develop .#default --command bash -c "
+            cargo build --release --features nif
+            mkdir -p priv/native
+            cp target/release/libchunker.so priv/native/libchunker_nif-x86_64-linux.so
+            cargo build --release --bin chunker
+            cargo build --release --bin loader
+            mkdir -p bin
+            cp target/release/chunker bin/
+            cp target/release/loader bin/
             cargo package
           "
       - name: Upload Crate
@@ -169,6 +177,11 @@ jobs:
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v1
         with:
-          files: artifacts/*
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zst
+            artifacts/*.spdx.json
+            artifacts/SHA256SUMS
+            artifacts/SIZE.txt
           fail_on_unmatched_files: false
           generate_release_notes: true

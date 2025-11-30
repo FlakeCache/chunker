@@ -1,6 +1,6 @@
 [package]
 name = "chunker"
-version = "0.1.0-beta4"
+version = "0.1.0-beta6"
 authors = ["FlakeCache Team"]
 edition = "2024"
 description = "High-performance content-defined chunking for Nix NARs (Rustler NIF + standalone library)"
@@ -19,7 +19,8 @@ include = [
   "LICENSE",
   "Cargo.toml",
   "Cargo.lock",
-  "priv/native/libchunker_nif-x86_64-linux.so"
+  "priv/native/libchunker_nif-x86_64-linux.so",
+  "bin/**"
 ]
 
 [profile.release]
