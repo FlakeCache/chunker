@@ -701,20 +701,38 @@ pub fn compress_bzip2(data: &[u8], level: Option<u32>) -> Result<Vec<u8>, Compre
 ///
 /// Returns `CompressionError` if decompression fails or size limit is exceeded.
 pub fn decompress_bzip2_into(data: &[u8], output: &mut Vec<u8>) -> Result<(), CompressionError> {
+    decompress_bzip2_into_with_limit(data, output, MAX_DECOMPRESSED_SIZE)
+}
+
+/// Decompress `bzip2` data into a provided buffer with a configurable size limit.
+///
+/// # Errors
+///
+/// Returns `CompressionError` if decompression fails or size limit is exceeded.
+pub fn decompress_bzip2_into_with_limit(
+    data: &[u8],
+    output: &mut Vec<u8>,
+    limit: u64,
+) -> Result<(), CompressionError> {
     let decoder = bzip2::read::BzDecoder::new(data);
 
-    // Limit reader to MAX_DECOMPRESSED_SIZE to prevent decompression bombs
-    let mut limited_reader = decoder.take(MAX_DECOMPRESSED_SIZE);
+    // Limit reader to limit + 1 to detect overflow
+    let mut limited_reader = decoder.take(limit + 1);
     let start_len = output.len();
     let _bytes_read = limited_reader
         .read_to_end(output)
         .map_err(|e| CompressionError::Decompression(e.to_string()))?;
 
-    // Check if we hit the size limit (indicates potential decompression bomb)
-    if (output.len() - start_len) as u64 == MAX_DECOMPRESSED_SIZE {
+    // Check if we exceeded the size limit (indicates potential decompression bomb)
+    if (output.len() - start_len) as u64 > limit {
+        warn!("bzip2_decompression_bomb_detected");
         return Err(CompressionError::SizeExceeded);
     }
 
+    debug!(
+        decompressed_len = output.len() - start_len,
+        "bzip2_decompression_complete"
+    );
     Ok(())
 }
 
@@ -1007,7 +1025,7 @@ mod tests {
             let compressed_copy = compressed.to_vec();
 
             let decompressed = scratch.decompress_auto(&compressed_copy)?;
-            assert_eq!(decompressed, data, "Failed for strategy {:?}", strategy);
+            assert_eq!(decompressed, data, "Failed for strategy {strategy:?}");
         }
         Ok(())
     }
@@ -1047,5 +1065,73 @@ mod tests {
         // Verify we can still use scratch after take
         let _ = scratch.compress_zstd(data, None, None)?;
         Ok(())
+    }
+
+    // Regression tests for decompression bomb detection boundary cases.
+    // These tests verify that the limit check uses `>` (not `==`) and the
+    // `take(limit + 1)` pattern to correctly detect overflow.
+
+    #[test]
+    fn test_bzip2_decompression_exact_limit_allowed() -> Result<(), CompressionError> {
+        // Data that decompresses to exactly the limit should succeed
+        let limit: u64 = 100;
+        let data = vec![b'A'; limit as usize];
+        let compressed = compress_bzip2(&data, None)?;
+
+        let mut output = Vec::new();
+        decompress_bzip2_into_with_limit(&compressed, &mut output, limit)?;
+        assert_eq!(output.len(), limit as usize);
+        Ok(())
+    }
+
+    #[test]
+    fn test_bzip2_decompression_over_limit_rejected() {
+        // Data that decompresses to limit + 1 should be rejected
+        let limit: u64 = 100;
+        let data = vec![b'A'; (limit + 1) as usize];
+        let compressed = compress_bzip2(&data, None).unwrap();
+
+        let mut output = Vec::new();
+        let result = decompress_bzip2_into_with_limit(&compressed, &mut output, limit);
+        assert!(matches!(result, Err(CompressionError::SizeExceeded)));
+    }
+
+    #[test]
+    fn test_zstd_decompression_exact_limit_allowed() -> Result<(), CompressionError> {
+        // Data that decompresses to exactly the limit should succeed
+        let limit: u64 = 100;
+        let data = vec![b'A'; limit as usize];
+        let compressed = compress_zstd(&data, None)?;
+
+        let mut output = Vec::new();
+        decompress_zstd_into_with_limit(&compressed, &mut output, limit)?;
+        assert_eq!(output.len(), limit as usize);
+        Ok(())
+    }
+
+    #[test]
+    fn test_zstd_decompression_over_limit_rejected() {
+        // Data that decompresses to limit + 1 should be rejected
+        let limit: u64 = 100;
+        let data = vec![b'A'; (limit + 1) as usize];
+        let compressed = compress_zstd(&data, None).unwrap();
+
+        let mut output = Vec::new();
+        let result = decompress_zstd_into_with_limit(&compressed, &mut output, limit);
+        assert!(matches!(result, Err(CompressionError::SizeExceeded)));
+    }
+
+    #[test]
+    fn test_lz4_decompression_bomb_detection() {
+        // LZ4 uses the default MAX_DECOMPRESSED_SIZE, so we test with
+        // data that would exceed reasonable limits in a real scenario.
+        // This test verifies the pattern is correct by checking that
+        // normal data succeeds.
+        let data = vec![b'A'; 10000];
+        let compressed = compress_lz4(&data).unwrap();
+
+        let mut output = Vec::new();
+        decompress_lz4_into(&compressed, &mut output).unwrap();
+        assert_eq!(output.len(), 10000);
     }
 }

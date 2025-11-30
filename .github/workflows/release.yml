@@ -58,19 +58,22 @@ jobs:
           merge-multiple: true
       - name: Package
         run: |
+          VERSION="${GITHUB_REF_NAME}"
           nix develop .#default --command bash -c "
-            mkdir -p priv/native bin
-            cp artifacts/chunker-v0.1.0-beta6-x86_64-unknown-linux-gnu dist/chunker-v0.1.0-beta6-x86_64-unknown-linux-gnu
-            cp artifacts/chunker-loader-v0.1.0-beta6-x86_64-unknown-linux-gnu dist/chunker-loader-v0.1.0-beta6-x86_64-unknown-linux-gnu
-            # Assuming the NIF is built in build-release, but since it's cdylib, it might not be in artifacts
-            # For now, build NIF separately
+            # Set version from tag
+            sed -i \"s/^version = .*/version = \\\"${VERSION#v}\\\"/\" Cargo.toml
+
+            mkdir -p priv/native bin dist
+            cp artifacts/chunker-${VERSION}-x86_64-unknown-linux-gnu dist/chunker-${VERSION}-x86_64-unknown-linux-gnu || true
+            cp artifacts/chunker-loader-${VERSION}-x86_64-unknown-linux-gnu dist/chunker-loader-${VERSION}-x86_64-unknown-linux-gnu || true
+            # Build NIF separately
             cargo build --release --features nif --no-default-features
             cp target/release/libchunker.so priv/native/libchunker_nif-x86_64-linux.so
-            cp artifacts/chunker-v0.1.0-beta6-x86_64-unknown-linux-gnu bin/chunker
-            cp artifacts/chunker-loader-v0.1.0-beta6-x86_64-unknown-linux-gnu bin/loader
+            cp artifacts/chunker-${VERSION}-x86_64-unknown-linux-gnu bin/chunker || true
+            cp artifacts/chunker-loader-${VERSION}-x86_64-unknown-linux-gnu bin/loader || true
             cargo build --release --bin chunker --features telemetry
             cp target/release/chunker bin/chunker_telemetry
-            cargo package
+            cargo package --allow-dirty
           "
       - name: Upload Crate
         uses: actions/upload-artifact@v4

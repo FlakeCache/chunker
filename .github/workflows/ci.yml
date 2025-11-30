@@ -183,6 +183,12 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Set version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+          echo "Set version to $VERSION"
+
       - name: Build NIF (linux x86_64) and stage into crate
         run: |
           cargo build --release --features nif
