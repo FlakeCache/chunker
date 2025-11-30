@@ -201,4 +201,4 @@ jobs:
         env:
           CARGO_REGISTRIES_FLAKECACHE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cargo publish --registry flakecache
+          cargo publish --registry flakecache --allow-dirty
