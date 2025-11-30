@@ -106,3 +106,4 @@ After creation is complete and no errors are found, inform the user that testing
 - Complete boundary condition coverage
 - Reasonable Mock strategies
 - Detailed error scenario testing
+- Use `just` commands to run tests (auto-enters nix): `just test`, `just test-otel`, `just test-nif`

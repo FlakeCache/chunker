@@ -37,3 +37,4 @@ You will receive:
 - Your Code MUST be compliant with standards and include necessary comments
 - You MUST only complete the specified task, never automatically execute other tasks
 - All completed tasks MUST be marked as done in tasks.md (`- [ ]` changed to `- [x]`)
+- Use `just` commands for building/testing (auto-enters nix): `just build`, `just test`, `just clippy`, `just ci`
