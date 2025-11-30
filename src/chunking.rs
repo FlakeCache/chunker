@@ -62,7 +62,7 @@ pub enum HashAlgorithm {
 /// This function is marked `#[inline(always)]` to eliminate match overhead
 /// in the hot path. The compiler will inline the function at each call site,
 /// allowing branch prediction to work optimally when the algorithm is known.
-#[inline(always)]
+#[inline]
 fn compute_hash(data: &[u8], algorithm: HashAlgorithm) -> [u8; 32] {
     match algorithm {
         HashAlgorithm::Blake3 => {
@@ -217,35 +217,41 @@ impl ChunkingOptions {
         Ok(())
     }
 
-    /// Safely convert min_size to u32 for FastCDC.
+    /// Safely convert `min_size` to `u32` for `FastCDC`.
     ///
     /// # Panics
     ///
     /// This should never panic if `validate()` was called first, as validation
     /// ensures all sizes fit within u32.
     #[inline]
+    #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn min_size_u32(&self) -> u32 {
         u32::try_from(self.min_size).expect("min_size validated to fit in u32")
     }
 
-    /// Safely convert avg_size to u32 for FastCDC.
+    /// Safely convert `avg_size` to `u32` for `FastCDC`.
     ///
     /// # Panics
     ///
     /// This should never panic if `validate()` was called first, as validation
     /// ensures all sizes fit within u32.
     #[inline]
+    #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn avg_size_u32(&self) -> u32 {
         u32::try_from(self.avg_size).expect("avg_size validated to fit in u32")
     }
 
-    /// Safely convert max_size to u32 for FastCDC.
+    /// Safely convert `max_size` to `u32` for `FastCDC`.
     ///
     /// # Panics
     ///
     /// This should never panic if `validate()` was called first, as validation
     /// ensures all sizes fit within u32.
     #[inline]
+    #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn max_size_u32(&self) -> u32 {
         u32::try_from(self.max_size).expect("max_size validated to fit in u32")
     }
@@ -339,9 +345,10 @@ pub struct ChunkStream<R: Read> {
     reader: R,
     buffer: BytesMut,
     min_size: usize,
+    #[allow(dead_code)]
     avg_size: usize,
     max_size: usize,
-    /// Pre-converted u32 values for FastCDC to avoid repeated casts in next()
+    /// Pre-converted u32 values for `FastCDC` to avoid repeated casts in `next()`
     min_size_u32: u32,
     avg_size_u32: u32,
     max_size_u32: u32,
