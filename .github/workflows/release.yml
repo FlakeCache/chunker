@@ -43,6 +43,7 @@ jobs:
 
   package-crate:
     name: Package Crate
+    needs: build-release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,17 +51,23 @@ jobs:
         uses: cachix/install-nix-action@v27
         with:
           nix_path: nixpkgs=channel:nixos-unstable
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
       - name: Package
         run: |
           nix develop .#default --command bash -c "
+            mkdir -p priv/native bin
+            cp artifacts/chunker-v0.1.0-beta6-x86_64-unknown-linux-gnu dist/chunker-v0.1.0-beta6-x86_64-unknown-linux-gnu
+            cp artifacts/chunker-loader-v0.1.0-beta6-x86_64-unknown-linux-gnu dist/chunker-loader-v0.1.0-beta6-x86_64-unknown-linux-gnu
+            # Assuming the NIF is built in build-release, but since it's cdylib, it might not be in artifacts
+            # For now, build NIF separately
             cargo build --release --features nif
-            mkdir -p priv/native
             cp target/release/libchunker.so priv/native/libchunker_nif-x86_64-linux.so
-            cargo build --release --bin chunker
-            cargo build --release --bin loader
-            mkdir -p bin
-            cp target/release/chunker bin/
-            cp target/release/loader bin/
+            cp artifacts/chunker-v0.1.0-beta6-x86_64-unknown-linux-gnu bin/chunker
+            cp artifacts/chunker-loader-v0.1.0-beta6-x86_64-unknown-linux-gnu bin/loader
             cargo package
           "
       - name: Upload Crate
