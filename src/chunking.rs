@@ -1041,6 +1041,7 @@ pub fn chunk_stream_with_hash<R: Read>(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::io::{BufReader, Cursor};
