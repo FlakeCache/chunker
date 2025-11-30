@@ -52,9 +52,6 @@ async-stream = ["futures"]
 # OpenTelemetry instrumentation with Tokio runtime (mutually exclusive with nif)
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:tokio"]
 
-# Legacy alias for otel
-telemetry = ["otel"]
-
 [lib]
 name = "chunker"
 path = "src/lib.rs"
