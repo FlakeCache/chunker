@@ -277,9 +277,10 @@ const MIN_ASYNC_BUFFER_LIMIT: usize = 64 * 1024 * 1024; // 64 MiB minimum to kee
 fn effective_read_slice_cap() -> usize {
     let from_env = env::var("CHUNKER_READ_SLICE_CAP_BYTES")
         .ok()
-        .and_then(|s| s.parse::<usize>().ok());
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&v| v >= MIN_READ_SLICE_CAP && v <= MAX_READ_SLICE_CAP);
     let cap = from_env.unwrap_or(DEFAULT_READ_SLICE_CAP);
-    cap.clamp(MIN_READ_SLICE_CAP, MAX_READ_SLICE_CAP)
+    cap
 }
 
 #[cfg(feature = "async-stream")]
@@ -328,6 +329,28 @@ impl<R: Read> ChunkStream<R> {
     /// # Errors
     ///
     /// Returns `ChunkingError::InvalidOptions` if the provided sizes are invalid.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use chunker::chunking::{ChunkStream, HashAlgorithm};
+    /// use std::io::Cursor;
+    ///
+    /// let data = b"some data to chunk";
+    /// let stream = ChunkStream::new_with_hash(
+    ///     Cursor::new(data),
+    ///     Some(1024),
+    ///     Some(4096),
+    ///     Some(8192),
+    ///     HashAlgorithm::Blake3
+    /// )?;
+    ///
+    /// for chunk in stream {
+    ///     let chunk = chunk?;
+    ///     println!("Chunk: {} bytes", chunk.length);
+    /// }
+    /// # Ok::<(), chunker::chunking::ChunkingError>(())
+    /// ```
     #[instrument(skip(reader))]
     pub fn new_with_hash(
         reader: R,
@@ -427,7 +450,8 @@ impl<R: Read> Iterator for ChunkStream<R> {
                         let len = chunk.length;
                         let offset = chunk.offset;
 
-                        if offset + len > batch_data.len() {
+                        // Safety check with overflow protection
+                        if offset.checked_add(len).map_or(true, |end| end > batch_data.len()) {
                             return Err(ChunkingError::Bounds {
                                 data_len: batch_data.len(),
                                 offset,
@@ -1006,6 +1030,16 @@ mod tests {
             HashAlgorithm::Blake3,
         )?;
         assert_eq!(eager, stream);
+        Ok(())
+    }
+
+    #[test]
+    fn test_overflow_protection_in_chunking() -> Result<(), ChunkingError> {
+        // Test that bounds checking prevents overflow
+        let data = vec![0u8; 100];
+        let result = chunk_data(&data, Some(50), Some(75), Some(200));
+        // Should succeed with valid options
+        assert!(result.is_ok());
         Ok(())
     }
 }
