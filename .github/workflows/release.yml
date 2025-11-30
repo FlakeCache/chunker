@@ -81,11 +81,32 @@ jobs:
           echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
           echo "📦 Checksum: $CHECKSUM"
 
+      - name: Package NIF Binary
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TARGET="x86_64-unknown-linux-gnu"
+
+          # Create tarball in rustler_precompiled format
+          mkdir -p nif-release
+          cp target/release/libchunker.so nif-release/
+          cd nif-release
+          tar -czvf "libchunker_nif-${VERSION}-${TARGET}.tar.gz" libchunker.so
+
+          # Calculate checksum for NIF
+          sha256sum "libchunker_nif-${VERSION}-${TARGET}.tar.gz" > "libchunker_nif-${VERSION}-${TARGET}.tar.gz.sha256"
+          echo "📦 NIF tarball created: libchunker_nif-${VERSION}-${TARGET}.tar.gz"
+
       - name: Upload Crate
         uses: actions/upload-artifact@v4
         with:
           name: crate
           path: target/package/*.crate
+
+      - name: Upload NIF Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: nif-binary
+          path: nif-release/*.tar.gz*
 
   publish-release:
     name: Publish to GitHub Release
@@ -103,6 +124,8 @@ jobs:
         with:
           files: |
             artifacts/*.crate
+            artifacts/*.tar.gz
+            artifacts/*.sha256
           fail_on_unmatched_files: false
           generate_release_notes: true
 
