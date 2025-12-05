@@ -27,6 +27,7 @@
           zig
           cargo-zigbuild
           nodejs
+          erlang  # Required for NIF (Rustler)
         ];
 
         # Helper to create a Rust toolchain with specific targets

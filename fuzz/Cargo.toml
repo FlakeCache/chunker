@@ -26,3 +26,17 @@ path = "fuzz_targets/compression.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "decompression"
+path = "fuzz_targets/decompression.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signing"
+path = "fuzz_targets/signing.rs"
+test = false
+doc = false
+bench = false

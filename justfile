@@ -50,6 +50,13 @@ bench:
 clean:
     cargo clean
 
+# Run fuzz tests (requires cargo-fuzz)
+fuzz:
+    cd fuzz && cargo fuzz run chunking --max-len=1000000 -- -max_total_time=10
+    cd fuzz && cargo fuzz run compression --max-len=10000000 -- -max_total_time=10
+    cd fuzz && cargo fuzz run decompression --max-len=10000000 -- -max_total_time=10
+    cd fuzz && cargo fuzz run signing --max-len=1000 -- -max_total_time=10
+
 # Full CI check (what CI runs)
 ci: fmt-check clippy test test-otel test-nif
     @echo "All CI checks passed!"
