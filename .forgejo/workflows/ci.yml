@@ -23,7 +23,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Nix
-        uses: FlakeCache/nix-installer@v1
+        uses: flakecache/nix-installer@v1
 
       - name: Cargo test
         run: |
@@ -40,7 +40,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Nix
-        uses: FlakeCache/nix-installer@v1
+        uses: flakecache/nix-installer@v1
 
       - name: Cargo test (otel)
         run: |
@@ -57,7 +57,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Nix
-        uses: FlakeCache/nix-installer@v1
+        uses: flakecache/nix-installer@v1
 
       - name: Cargo test (nif)
         run: |
@@ -77,7 +77,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Nix
-        uses: FlakeCache/nix-installer@v1
+        uses: flakecache/nix-installer@v1
 
       - name: Cargo clippy
         run: |
@@ -99,7 +99,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Nix
-        uses: FlakeCache/nix-installer@v1
+        uses: flakecache/nix-installer@v1
 
       - name: Cargo fmt check
         run: |

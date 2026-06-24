@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Nix
-        uses: FlakeCache/nix-installer@v1
+        uses: flakecache/nix-installer@v1
 
       - name: Run tests and clippy
         run: |
@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Nix
-        uses: FlakeCache/nix-installer@v1
+        uses: flakecache/nix-installer@v1
 
       - name: Get Version
         id: version
@@ -130,7 +130,7 @@ jobs:
       - name: Checkout crate-index
         uses: actions/checkout@v4
         with:
-          repository: FlakeCache/crate-index
+          repository: flakecache/crate-index
           token: ${{ secrets.CRATE_INDEX_TOKEN }}
           path: crate-index
 
@@ -145,7 +145,7 @@ jobs:
           echo '{"name":"chunker","vers":"'"$VERSION"'","deps":[],"cksum":"'"$CHECKSUM"'","features":{},"yanked":false}' >> ch/un/chunker
 
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "forgejo-actions[bot]@noreply.git.infra.centralcloud.com"
           git add ch/un/chunker
           git commit -m "Add chunker v$VERSION"
           git push
