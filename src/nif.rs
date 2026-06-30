@@ -194,19 +194,22 @@ fn chunk_data<'a>(
     min_size: Option<u32>,
     avg_size: Option<u32>,
     max_size: Option<u32>,
-) -> NifResult<Vec<(String, u64, u64)>> {
+) -> NifResult<(rustler::Atom, Vec<(String, u64, u64)>)> {
     let _ = env;
-    let min = min_size.unwrap_or(256 * 1024) as usize;
-    let avg = avg_size.unwrap_or(1024 * 1024) as usize;
-    let max = max_size.unwrap_or(4 * 1024 * 1024) as usize;
+    let min = min_size.unwrap_or(16 * 1024) as usize;
+    let avg = avg_size.unwrap_or(64 * 1024) as usize;
+    let max = max_size.unwrap_or(256 * 1024) as usize;
 
     let cursor = Cursor::new(data.as_slice());
 
     match chunking::chunk_stream(cursor, Some(min), Some(avg), Some(max)) {
-        Ok(chunks) => Ok(chunks
-            .into_iter()
-            .map(|chunk| (chunk.hash_hex(), chunk.offset, chunk.length as u64))
-            .collect()),
+        Ok(chunks) => Ok((
+            atoms::ok(),
+            chunks
+                .into_iter()
+                .map(|chunk| (chunk.hash_hex(), chunk.offset, chunk.length as u64))
+                .collect(),
+        )),
         Err(
             chunking::ChunkingError::Bounds { .. }
             | chunking::ChunkingError::BufferLimitExceeded { .. },
@@ -232,11 +235,11 @@ fn chunk_data_streaming<'a>(
     min_size: Option<u32>,
     avg_size: Option<u32>,
     max_size: Option<u32>,
-) -> NifResult<Vec<(String, u64, u64)>> {
+) -> NifResult<(rustler::Atom, Vec<(String, u64, u64)>)> {
     let _ = env;
-    let min = min_size.unwrap_or(256 * 1024) as usize;
-    let avg = avg_size.unwrap_or(1024 * 1024) as usize;
-    let max = max_size.unwrap_or(4 * 1024 * 1024) as usize;
+    let min = min_size.unwrap_or(16 * 1024) as usize;
+    let avg = avg_size.unwrap_or(64 * 1024) as usize;
+    let max = max_size.unwrap_or(256 * 1024) as usize;
 
     let cursor = Cursor::new(data.as_slice());
     let stream = chunking::ChunkStream::new(cursor, Some(min), Some(avg), Some(max))
@@ -263,5 +266,5 @@ fn chunk_data_streaming<'a>(
         chunks.push((chunk.hash_hex(), chunk.offset, chunk.length as u64));
     }
 
-    Ok(chunks)
+    Ok((atoms::ok(), chunks))
 }
