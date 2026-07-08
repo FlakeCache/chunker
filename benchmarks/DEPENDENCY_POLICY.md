@@ -19,6 +19,9 @@ semver-major changes that weaken cache compatibility or hot-path performance.
 ## Chunk Boundaries
 
 - Direct chunking uses `fastcdc = "4.0.1"`.
+- The v4 upgrade accepted a measured raw chunker regression because keeping the
+  dependency current was chosen over holding v3. Keep that tradeoff visible in
+  `benchmarks/latest.md`.
 - FastCDC major upgrades must run a boundary fixture comparison and a native
   benchmark comparison before acceptance. Do not accept a boundary-changing
   upgrade without a storage compatibility decision.

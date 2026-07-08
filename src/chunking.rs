@@ -311,7 +311,7 @@ pub fn chunk_descriptors_with_hash(
 ) -> Result<Vec<ChunkDescriptor>, ChunkingError> {
     let options = ChunkingOptions::resolve(min_size, avg_size, max_size)?;
 
-    // 1. FastCDC Pass (Serial, Memory-Bound, ~2.5 GB/s)
+    // 1. FastCDC pass. Observed throughput is host and corpus dependent.
     // We collect cut points first to enable parallel hashing.
     let chunker = FastCDC::new(data, options.min_size, options.avg_size, options.max_size);
 
@@ -396,7 +396,7 @@ fn get_metrics() -> &'static CachedMetrics {
         chunk_size: histogram!("chunker.chunk_size"),
     })
 }
-const DEFAULT_READ_SLICE_CAP: usize = 16 * 1024 * 1024; // 16 MiB per read to avoid oversized allocations
+const DEFAULT_READ_SLICE_CAP: usize = 8 * 1024 * 1024; // 8 MiB per read keeps zero-fill overhead bounded
 const MAX_READ_SLICE_CAP: usize = 256 * 1024 * 1024; // 256 MiB hard ceiling
 const MIN_READ_SLICE_CAP: usize = 4096;
 #[cfg(feature = "async-stream")]
@@ -1134,6 +1134,39 @@ mod tests {
             assert_eq!(descriptor.offset, chunk.offset);
             assert_eq!(descriptor.length, chunk.length);
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn fastcdc_boundaries_match_v3_golden_fixture() -> Result<(), ChunkingError> {
+        // Generated with fastcdc 3.2.1 using the same deterministic fixture.
+        let mut data = Vec::with_capacity(64 * 1024 + 123);
+        for i in 0usize..(64 * 1024 + 123) {
+            data.push(((i * 31 + i / 7) % 251) as u8);
+        }
+
+        let descriptors = chunk_descriptors(&data, Some(1024), Some(6000), Some(16 * 1024))?;
+        let boundaries: Vec<(u64, usize)> = descriptors
+            .iter()
+            .map(|chunk| (chunk.offset, chunk.length))
+            .collect();
+
+        assert_eq!(
+            boundaries,
+            vec![
+                (0, 6162),
+                (6162, 7028),
+                (13190, 7028),
+                (20218, 7028),
+                (27246, 7028),
+                (34274, 7028),
+                (41302, 7028),
+                (48330, 7028),
+                (55358, 7028),
+                (62386, 3273),
+            ]
+        );
 
         Ok(())
     }

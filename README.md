@@ -42,12 +42,14 @@ cargo build --release # optimized
 
 | Path                    | Size / Params                        | Throughput      | Notes                                   |
 | ----------------------- | ------------------------------------ | --------------- | --------------------------------------- |
-| FastCDC raw             | 10 MiB (256K/1M/4M)                  | ~1.85 GiB/s     | Reference chunker only                  |
-| ChunkStream (hash+copy) | 10 MiB (defaults)                    | ~253 MiB/s      | End-to-end chunk+hash (SHA-256)         |
-| Eager chunk descriptors | 10 MiB (defaults)                    | ~593 MiB/s      | Hash/offset/length only                 |
-| SHA-256 hash            | 1 MiB                                | ~1.57 GiB/s     | Default compatibility hash              |
-| BLAKE3 hash             | 1 MiB                                | ~4.14 GiB/s     | Explicit opt-in hash                    |
-| Zstd compress           | 1 MiB zeros, level 3                 | ~4.42 GiB/s     | With buffer reuse                       |
+| FastCDC raw             | 10 MiB (256K/1M/4M)                  | ~1.92 GiB/s     | Reference chunker only                  |
+| ChunkStream (hash+copy) | 10 MiB (defaults)                    | ~713 MiB/s      | End-to-end chunk+hash (SHA-256)         |
+| Eager chunk data        | 10 MiB (defaults, SHA-256)           | ~1.06 GiB/s     | Payload plus metadata                   |
+| Chunk descriptors       | 10 MiB (defaults, SHA-256)           | ~1.22 GiB/s     | Metadata-only path                      |
+| Chunk descriptors       | 10 MiB (defaults, BLAKE3)            | ~1.48 GiB/s     | Metadata-only path                      |
+| SHA-256 hash            | 1 MiB                                | ~1.58 GiB/s     | Default compatibility hash              |
+| BLAKE3 hash             | 1 MiB                                | ~4.10 GiB/s     | Explicit opt-in hash                    |
+| Zstd compress           | 1 MiB zeros, level 3                 | ~4.14 GiB/s     | With buffer reuse                       |
 
 CPU note: numbers are from `benchmarks/latest.md` generated with `RUSTFLAGS="-C target-cpu=native"` and a release benchmark build. Rerun `just bench` or `cargo bench` on your hardware (x86_64/ARM) to get local figures.
 

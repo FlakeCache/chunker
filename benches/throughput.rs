@@ -3,7 +3,7 @@
 #![allow(clippy::panic)]
 
 use chunker::{
-    chunking::ChunkStream,
+    chunking::{ChunkStream, HashAlgorithm, chunk_data_with_hash, chunk_descriptors_with_hash},
     compression::compress_zstd,
     hashing::{blake3_hash, sha256_hash},
 };
@@ -36,9 +36,39 @@ fn benchmark_chunking(c: &mut Criterion) {
         });
     });
 
-    let _ = group.bench_function("chunk_data_eager_10mb", |b| {
+    let _ = group.bench_function("chunk_data_eager_10mb_sha256", |b| {
         b.iter(|| {
             let _ = chunker::chunking::chunk_data(black_box(&data), None, None, None);
+        });
+    });
+
+    let _ = group.bench_function("chunk_data_eager_10mb_blake3", |b| {
+        b.iter(|| {
+            let _ = chunk_data_with_hash(black_box(&data), None, None, None, HashAlgorithm::Blake3);
+        });
+    });
+
+    let _ = group.bench_function("chunk_descriptors_10mb_sha256", |b| {
+        b.iter(|| {
+            let _ = chunk_descriptors_with_hash(
+                black_box(&data),
+                None,
+                None,
+                None,
+                HashAlgorithm::Sha256,
+            );
+        });
+    });
+
+    let _ = group.bench_function("chunk_descriptors_10mb_blake3", |b| {
+        b.iter(|| {
+            let _ = chunk_descriptors_with_hash(
+                black_box(&data),
+                None,
+                None,
+                None,
+                HashAlgorithm::Blake3,
+            );
         });
     });
 
