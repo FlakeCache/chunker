@@ -42,11 +42,12 @@ cargo build --release # optimized
 
 | Path                    | Size / Params                        | Throughput      | Notes                                   |
 | ----------------------- | ------------------------------------ | --------------- | --------------------------------------- |
-| FastCDC raw             | 10 MiB (256K/1M/4M)                  | ~2.23 GiB/s     | Reference chunker only                  |
-| ChunkStream (hash+copy) | 10 MiB (defaults)                    | ~277 MiB/s      | End-to-end chunk+hash (SHA-256)         |
-| Eager chunk descriptors | 10 MiB (defaults)                    | ~621 MiB/s      | Hash/offset/length only                 |
-| SHA-256 hash            | 1 MiB                                | ~1.61 GiB/s     | Hardware-accelerated                    |
-| Zstd compress           | 1 MiB zeros, level 3                 | ~3.91 GiB/s     | With buffer reuse                       |
+| FastCDC raw             | 10 MiB (256K/1M/4M)                  | ~2.28 GiB/s     | Reference chunker only                  |
+| ChunkStream (hash+copy) | 10 MiB (defaults)                    | ~282 MiB/s      | End-to-end chunk+hash (SHA-256)         |
+| Eager chunk descriptors | 10 MiB (defaults)                    | ~634 MiB/s      | Hash/offset/length only                 |
+| SHA-256 hash            | 1 MiB                                | ~1.61 GiB/s     | Default compatibility hash              |
+| BLAKE3 hash             | 1 MiB                                | ~4.03 GiB/s     | Explicit opt-in hash                    |
+| Zstd compress           | 1 MiB zeros, level 3                 | ~4.38 GiB/s     | With buffer reuse                       |
 
 CPU note: numbers are from `benchmarks/latest.md` generated with `RUSTFLAGS="-C target-cpu=native"` and a release benchmark build. Rerun `just bench` or `cargo bench` on your hardware (x86_64/ARM) to get local figures.
 

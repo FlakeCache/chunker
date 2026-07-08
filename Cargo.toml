@@ -38,10 +38,7 @@ debug = 0
 ignored = ["bzip2", "serde", "serde_json"]
 
 [features]
-default = ["sha2-asm"]
-
-# Use assembly-optimized SHA2 (faster hashing on x86_64/aarch64)
-sha2-asm = ["sha2/asm"]
+default = []
 
 # Erlang/Elixir NIF bindings via Rustler
 nif = ["rustler"]
@@ -61,10 +58,7 @@ async-stream = { version = "0.3", optional = true }
 
 # Cryptography
 ed25519-dalek = { version = "3.0", features = ["rand_core", "fast", "batch", "zeroize"] }
-# Keep direct chunk SHA-256 hashing on sha2 0.10 until a newer release exposes an
-# equivalent accelerated backend. sha2 0.11 removed the sha2/asm feature used by
-# the default sha2-asm feature below; see benchmarks/DEPENDENCY_POLICY.md.
-sha2 = { version = "0.10.9" }
+sha2 = { version = "0.11.0" }
 zeroize = { version = "1.7", features = ["derive"] }
 
 # Compression

@@ -4,8 +4,8 @@
 
 ### 1. Cryptography
 *   **SHA-256 (`sha2` crate)**:
-    *   ✅ **Enabled**: `features = ["asm"]` is correctly set in `Cargo.toml`. This enables hand-written assembly implementations for SHA-256, which is significantly faster than the pure Rust version.
-    *   **CPU Extensions**: Uses SHA extensions (SHA-NI) if available on the hardware at runtime.
+    *   ✅ **Current**: `sha2 0.11` is used directly for chunk SHA-256 hashing.
+    *   **CPU Extensions**: `sha2 0.11` does not expose the old `asm` feature. Keep backend decisions benchmark-driven; the latest native benchmark is tracked in `benchmarks/latest.md`.
 *   **BLAKE3 (`blake3` crate)**:
     *   ✅ **Enabled**: `features = ["rayon"]` is set.
     *   **SIMD**: BLAKE3 includes runtime detection for AVX2, AVX-512, and NEON. It automatically selects the fastest implementation.

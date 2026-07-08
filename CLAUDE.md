@@ -20,7 +20,6 @@ just --list       # show all commands
 
 ## Features
 
-- `sha2-asm` - Assembly-optimized SHA2 (default)
 - `nif` - Erlang/Elixir NIF bindings
 - `async-stream` - Async streaming support
 

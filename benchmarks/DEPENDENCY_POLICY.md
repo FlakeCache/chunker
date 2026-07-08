@@ -7,14 +7,11 @@ semver-major changes that weaken cache compatibility or hot-path performance.
 
 - SHA-256 is the default hash for `chunk_data`, `chunk_descriptors`,
   `ChunkStream::new`, and NIF chunking APIs.
-- Keep direct SHA-256 hashing on `sha2 = "0.10.9"` while this crate depends on
-  `sha2/asm` through the default `sha2-asm` feature.
-- Do not migrate the direct SHA-256 path to `sha2 0.11` unless the replacement
-  provides an equivalent accelerated backend or benchmarks prove the loss is
-  acceptable for the cache hot path.
-- `sha2 0.11` is acceptable transitively for dependencies such as
-  `ed25519-dalek`; it must not become the direct chunk hashing backend by
-  accident.
+- Direct SHA-256 hashing uses `sha2 = "0.11.0"`. `sha2 0.11` has no `asm`
+  feature; do not reintroduce the removed `sha2-asm` feature without proving the
+  selected backend exists and improves the cache hot path.
+- Any SHA backend change must preserve default SHA-256 semantics and include a
+  native benchmark comparison against `benchmarks/latest.md`.
 - BLAKE3 is supported as an explicit hash algorithm for internal or protocol
   surfaces that allow non-SHA chunk hashes. Do not make it the default without a
   storage/protocol compatibility decision.
@@ -47,4 +44,3 @@ For performance-sensitive upgrades, also run:
 RUSTFLAGS="-C target-cpu=native" cargo bench --bench throughput -- --sample-size 10
 BENCH_RUSTFLAGS="-C target-cpu=native" scripts/export-criterion.py
 ```
-
