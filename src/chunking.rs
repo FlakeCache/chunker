@@ -209,71 +209,7 @@ impl ChunkingOptions {
             ));
         }
 
-        // Defense-in-depth: Ensure all sizes fit in u32 for FastCDC.
-        // The 1GB check above already prevents this on 64-bit systems,
-        // but we add explicit u32 bounds checks for safety and clarity.
-        if self.min_size > u32::MAX as usize {
-            return Err(ChunkingError::InvalidOptions(format!(
-                "min_size {} exceeds u32::MAX ({}), cannot be used with FastCDC",
-                self.min_size,
-                u32::MAX
-            )));
-        }
-        if self.avg_size > u32::MAX as usize {
-            return Err(ChunkingError::InvalidOptions(format!(
-                "avg_size {} exceeds u32::MAX ({}), cannot be used with FastCDC",
-                self.avg_size,
-                u32::MAX
-            )));
-        }
-        if self.max_size > u32::MAX as usize {
-            return Err(ChunkingError::InvalidOptions(format!(
-                "max_size {} exceeds u32::MAX ({}), cannot be used with FastCDC",
-                self.max_size,
-                u32::MAX
-            )));
-        }
-
         Ok(())
-    }
-
-    /// Safely convert `min_size` to `u32` for `FastCDC`.
-    ///
-    /// # Panics
-    ///
-    /// This should never panic if `validate()` was called first, as validation
-    /// ensures all sizes fit within u32.
-    #[inline]
-    #[must_use]
-    #[allow(clippy::expect_used)]
-    pub fn min_size_u32(&self) -> u32 {
-        u32::try_from(self.min_size).expect("min_size validated to fit in u32")
-    }
-
-    /// Safely convert `avg_size` to `u32` for `FastCDC`.
-    ///
-    /// # Panics
-    ///
-    /// This should never panic if `validate()` was called first, as validation
-    /// ensures all sizes fit within u32.
-    #[inline]
-    #[must_use]
-    #[allow(clippy::expect_used)]
-    pub fn avg_size_u32(&self) -> u32 {
-        u32::try_from(self.avg_size).expect("avg_size validated to fit in u32")
-    }
-
-    /// Safely convert `max_size` to `u32` for `FastCDC`.
-    ///
-    /// # Panics
-    ///
-    /// This should never panic if `validate()` was called first, as validation
-    /// ensures all sizes fit within u32.
-    #[inline]
-    #[must_use]
-    #[allow(clippy::expect_used)]
-    pub fn max_size_u32(&self) -> u32 {
-        u32::try_from(self.max_size).expect("max_size validated to fit in u32")
     }
 }
 
@@ -377,12 +313,7 @@ pub fn chunk_descriptors_with_hash(
 
     // 1. FastCDC Pass (Serial, Memory-Bound, ~2.5 GB/s)
     // We collect cut points first to enable parallel hashing.
-    let chunker = FastCDC::new(
-        data,
-        options.min_size_u32(),
-        options.avg_size_u32(),
-        options.max_size_u32(),
-    );
+    let chunker = FastCDC::new(data, options.min_size, options.avg_size, options.max_size);
 
     let cut_points: Vec<_> = chunker.collect();
 
@@ -437,10 +368,6 @@ pub struct ChunkStream<R: Read> {
     #[allow(dead_code)]
     avg_size: usize,
     max_size: usize,
-    /// Pre-converted u32 values for `FastCDC` to avoid repeated casts in `next()`
-    min_size_u32: u32,
-    avg_size_u32: u32,
-    max_size_u32: u32,
     hash: HashAlgorithm,
     position: u64,
     eof: bool,
@@ -570,23 +497,12 @@ impl<R: Read> ChunkStream<R> {
         let initial_capacity = std::cmp::min(options.min_size, 64 * 1024);
         let buffer = BytesMut::with_capacity(initial_capacity);
 
-        // Pre-convert sizes to u32 for FastCDC (validation ensures they fit in u32)
-        #[allow(clippy::cast_possible_truncation)]
-        let min_size_u32 = options.min_size as u32;
-        #[allow(clippy::cast_possible_truncation)]
-        let avg_size_u32 = options.avg_size as u32;
-        #[allow(clippy::cast_possible_truncation)]
-        let max_size_u32 = options.max_size as u32;
-
         Ok(Self {
             reader,
             buffer,
             min_size: options.min_size,
             avg_size: options.avg_size,
             max_size: options.max_size,
-            min_size_u32,
-            avg_size_u32,
-            max_size_u32,
             hash,
             position: 0,
             eof: false,
@@ -609,13 +525,8 @@ impl<R: Read> Iterator for ChunkStream<R> {
             // Early-exit: skip FastCDC iteration if buffer is smaller than min_size and not at EOF
             // FastCDC cannot produce a chunk smaller than min_size unless it's the final chunk.
             if !self.buffer.is_empty() && (self.buffer.len() >= self.min_size || self.eof) {
-                // Create a FastCDC iterator over the buffer using cached u32 params
-                let cdc = FastCDC::new(
-                    &self.buffer,
-                    self.min_size_u32,
-                    self.avg_size_u32,
-                    self.max_size_u32,
-                );
+                // Create a FastCDC iterator over the buffer using validated params.
+                let cdc = FastCDC::new(&self.buffer, self.min_size, self.avg_size, self.max_size);
 
                 // Collect all valid cut points in the current buffer
                 let mut cut_points = Vec::new();
@@ -856,9 +767,9 @@ impl<R: AsyncRead + Unpin + Send + 'static> ChunkStreamAsync<R> {
                 if !buffer.is_empty() {
                     let mut cdc = FastCDC::new(
                         &buffer,
-                        options.min_size as u32,
-                        options.avg_size as u32,
-                        options.max_size as u32,
+                        options.min_size,
+                        options.avg_size,
+                        options.max_size,
                     );
 
                     if let Some(chunk) = cdc.next() {
@@ -1288,12 +1199,8 @@ mod tests {
         assert_eq!(hasher_a.finish(), hasher_b.finish());
     }
 
-    // Tests for P1-T02: Integer overflow protection for FastCDC size casting (BUG-002)
-
     #[test]
-    fn test_u32_overflow_validation_at_boundary() {
-        // Test at u32::MAX boundary - should pass since it's within u32
-        // But will fail the 1GB check first (1GB < u32::MAX)
+    fn test_max_size_validation_at_boundary() {
         let result = ChunkingOptions::resolve(
             Some(64),
             Some(1024),
@@ -1301,16 +1208,14 @@ mod tests {
         );
         assert!(result.is_ok());
 
-        // Verify the helper methods work for valid options
         let options = result.unwrap();
-        assert_eq!(options.min_size_u32(), 64);
-        assert_eq!(options.avg_size_u32(), 1024);
-        assert_eq!(options.max_size_u32(), 1024 * 1024 * 1024);
+        assert_eq!(options.min_size, 64);
+        assert_eq!(options.avg_size, 1024);
+        assert_eq!(options.max_size, 1024 * 1024 * 1024);
     }
 
     #[test]
-    fn test_u32_overflow_rejected_max_size_exceeds_1gb() {
-        // max_size > 1GB should be rejected (1GB check triggers before u32 check)
+    fn test_max_size_rejected_above_1gb() {
         let result = ChunkingOptions::resolve(
             Some(64),
             Some(1024),
@@ -1324,37 +1229,6 @@ mod tests {
             msg.contains("1GB"),
             "Error message should mention 1GB limit: {msg}"
         );
-    }
-
-    #[test]
-    #[cfg(target_pointer_width = "64")]
-    fn test_u32_overflow_protection_would_trigger_for_huge_values() {
-        // This test documents that on 64-bit systems, the 1GB check prevents
-        // the u32 overflow check from ever triggering in practice.
-        // The u32::MAX is ~4.3GB, and we limit max_size to 1GB.
-        // This test verifies the defense-in-depth check exists.
-
-        // Create options manually to bypass resolve() and test validate() directly
-        let huge_options = ChunkingOptions {
-            min_size: (u32::MAX as usize) + 1, // Exceeds u32::MAX
-            avg_size: (u32::MAX as usize) + 2,
-            max_size: (u32::MAX as usize) + 3,
-        };
-
-        // validate() should reject this (1GB check triggers first, but u32 check is there)
-        let result = huge_options.validate();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_size_conversion_helpers_after_validation() {
-        // After successful validation, the helper methods should work correctly
-        let options = ChunkingOptions::resolve(Some(1024), Some(4096), Some(8192)).unwrap();
-
-        // These should not panic because validation ensures sizes fit in u32
-        assert_eq!(options.min_size_u32(), 1024);
-        assert_eq!(options.avg_size_u32(), 4096);
-        assert_eq!(options.max_size_u32(), 8192);
     }
 
     #[test]
@@ -1391,10 +1265,9 @@ mod tests {
             );
 
             let options = result.unwrap();
-            // Verify conversions don't panic
-            let _ = options.min_size_u32();
-            let _ = options.avg_size_u32();
-            let _ = options.max_size_u32();
+            assert_eq!(options.min_size, min);
+            assert_eq!(options.avg_size, avg);
+            assert_eq!(options.max_size, max);
         }
     }
 }

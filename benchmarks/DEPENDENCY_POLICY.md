@@ -18,10 +18,10 @@ semver-major changes that weaken cache compatibility or hot-path performance.
 
 ## Chunk Boundaries
 
-- Keep `fastcdc = "3.2.1"` until a newer release matches both boundary behavior
-  and same-host throughput.
-- Any FastCDC major upgrade must run a boundary fixture comparison and a native
-  benchmark comparison before acceptance.
+- Direct chunking uses `fastcdc = "4.0.1"`.
+- FastCDC major upgrades must run a boundary fixture comparison and a native
+  benchmark comparison before acceptance. Do not accept a boundary-changing
+  upgrade without a storage compatibility decision.
 
 ## Required Checks For Hashing Or Chunking Upgrades
 

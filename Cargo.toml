@@ -67,7 +67,7 @@ lzma-rs = "0.3.0"
 bzip2 = "0.6.1"
 
 # Content-defined chunking
-fastcdc = "3.2.1"
+fastcdc = "4.0.1"
 xz2 = "0.1.7"
 
 # Serialization
