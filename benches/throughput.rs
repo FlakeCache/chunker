@@ -2,7 +2,11 @@
 #![allow(clippy::expect_used)]
 #![allow(clippy::panic)]
 
-use chunker::{chunking::ChunkStream, compression::compress_zstd, hashing::sha256_hash};
+use chunker::{
+    chunking::ChunkStream,
+    compression::compress_zstd,
+    hashing::{blake3_hash, sha256_hash},
+};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use fastcdc::v2020::FastCDC;
 use std::hint::black_box;
@@ -50,6 +54,11 @@ fn benchmark_hashing(c: &mut Criterion) {
     let _ = group.bench_function("sha256_1mb", |b| {
         b.iter(|| {
             let _ = sha256_hash(black_box(&data));
+        });
+    });
+    let _ = group.bench_function("blake3_1mb", |b| {
+        b.iter(|| {
+            let _ = blake3_hash(black_box(&data));
         });
     });
     group.finish();
