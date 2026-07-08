@@ -31,8 +31,8 @@ jobs:
             cargo test --all --release\
           "
 
-  test-otel:
-    name: Tests (otel)
+  test-telemetry:
+    name: Tests (telemetry)
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -42,10 +42,10 @@ jobs:
       - name: Install Nix
         uses: flakecache/nix-installer@v1
 
-      - name: Cargo test (otel)
+      - name: Cargo test (telemetry)
         run: |
           nix develop .#default --command bash -c "\
-            cargo test --all --release --features otel\
+            cargo test --all --release --features telemetry\
           "
 
   test-nif:
@@ -70,7 +70,7 @@ jobs:
     runs-on: self-hosted
     strategy:
       matrix:
-        features: ["", "otel", "nif"]
+        features: ["", "telemetry", "nif"]
     steps:
       - uses: actions/checkout@v4
         with:

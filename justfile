@@ -20,9 +20,9 @@ build-release:
 test:
     cargo test --all
 
-# Run tests with otel feature
-test-otel:
-    cargo test --all --features otel
+# Run tests with telemetry feature
+test-telemetry:
+    cargo test --all --features telemetry
 
 # Run tests with nif feature
 test-nif:
@@ -31,7 +31,7 @@ test-nif:
 # Run clippy on all feature combinations
 clippy:
     cargo clippy -- -D warnings
-    cargo clippy --features otel -- -D warnings
+    cargo clippy --features telemetry -- -D warnings
     cargo clippy --features nif -- -D warnings
 
 # Format code
@@ -44,7 +44,18 @@ fmt-check:
 
 # Run benchmarks
 bench:
-    cargo bench
+    RUSTFLAGS="-C target-cpu=native" cargo bench
+    BENCH_RUSTFLAGS="-C target-cpu=native" scripts/export-criterion.py
+
+# Run a shorter benchmark pass and export summaries
+bench-quick:
+    cargo bench --bench throughput -- --sample-size 10
+    scripts/export-criterion.py
+
+# Run a shorter native-CPU benchmark pass and export summaries
+bench-quick-native:
+    RUSTFLAGS="-C target-cpu=native" cargo bench --bench throughput -- --sample-size 10
+    BENCH_RUSTFLAGS="-C target-cpu=native" scripts/export-criterion.py
 
 # Clean build artifacts
 clean:
@@ -58,5 +69,5 @@ fuzz:
     cd fuzz && cargo fuzz run signing --max-len=1000 -- -max_total_time=10
 
 # Full CI check (what CI runs)
-ci: fmt-check clippy test test-otel test-nif
+ci: fmt-check clippy test test-telemetry test-nif
     @echo "All CI checks passed!"

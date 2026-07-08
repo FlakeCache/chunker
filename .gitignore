@@ -28,6 +28,7 @@ tarpaulin-report.html
 # Test outputs
 test-output/
 test-results/
+__pycache__/
 
 # Build artifacts
 *.o

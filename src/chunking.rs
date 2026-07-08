@@ -24,8 +24,8 @@ use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read};
 #[cfg(feature = "async-stream")]
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "async-stream")]
 use std::task::{Context, Poll};
 use tracing::{debug, instrument, trace};
@@ -92,6 +92,26 @@ pub struct ChunkMetadata {
 
 impl ChunkMetadata {
     /// Returns the hash as a hex string.
+    pub fn hash_hex(&self) -> String {
+        hex::encode(self.hash)
+    }
+}
+
+/// Metadata for a chunk when callers do not need the payload bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ChunkDescriptor {
+    /// Hash of the chunk payload (32 bytes) using the configured [`HashAlgorithm`].
+    #[serde(with = "hex_serde")]
+    pub hash: [u8; 32],
+    /// Starting byte offset of the chunk relative to the input.
+    pub offset: u64,
+    /// Chunk length in bytes.
+    pub length: usize,
+}
+
+impl ChunkDescriptor {
+    /// Returns the hash as a hex string.
+    #[must_use]
     pub fn hash_hex(&self) -> String {
         hex::encode(self.hash)
     }
@@ -286,29 +306,99 @@ pub fn chunk_data_with_hash(
     max_size: Option<usize>,
     hash: HashAlgorithm,
 ) -> Result<Vec<ChunkMetadata>, ChunkingError> {
+    let descriptors = chunk_descriptors_with_hash(data, min_size, avg_size, max_size, hash)?;
+
+    descriptors
+        .into_iter()
+        .map(|descriptor| {
+            let offset = usize::try_from(descriptor.offset).map_err(|_| ChunkingError::Bounds {
+                data_len: data.len(),
+                offset: usize::MAX,
+                length: descriptor.length,
+            })?;
+            let end = offset
+                .checked_add(descriptor.length)
+                .ok_or(ChunkingError::Bounds {
+                    data_len: data.len(),
+                    offset,
+                    length: descriptor.length,
+                })?;
+
+            if end > data.len() {
+                return Err(ChunkingError::Bounds {
+                    data_len: data.len(),
+                    offset,
+                    length: descriptor.length,
+                });
+            }
+
+            Ok(ChunkMetadata {
+                hash: descriptor.hash,
+                offset: descriptor.offset,
+                length: descriptor.length,
+                payload: Bytes::copy_from_slice(&data[offset..end]),
+            })
+        })
+        .collect()
+}
+
+/// Chunk data and return only hash/offset/length metadata.
+///
+/// This is the preferred API for NIF callers that already own the source binary
+/// and can slice it in the host runtime.
+///
+/// # Errors
+///
+/// Returns `ChunkingError` when chunking options are invalid or `FastCDC` returns
+/// invalid bounds.
+pub fn chunk_descriptors(
+    data: &[u8],
+    min_size: Option<usize>,
+    avg_size: Option<usize>,
+    max_size: Option<usize>,
+) -> Result<Vec<ChunkDescriptor>, ChunkingError> {
+    chunk_descriptors_with_hash(data, min_size, avg_size, max_size, HashAlgorithm::Sha256)
+}
+
+/// Same as [`chunk_descriptors`] but lets callers choose the hash algorithm.
+///
+/// # Errors
+///
+/// Returns `ChunkingError` when chunking options are invalid or `FastCDC` returns
+/// invalid bounds.
+pub fn chunk_descriptors_with_hash(
+    data: &[u8],
+    min_size: Option<usize>,
+    avg_size: Option<usize>,
+    max_size: Option<usize>,
+    hash: HashAlgorithm,
+) -> Result<Vec<ChunkDescriptor>, ChunkingError> {
     let options = ChunkingOptions::resolve(min_size, avg_size, max_size)?;
 
     // 1. FastCDC Pass (Serial, Memory-Bound, ~2.5 GB/s)
     // We collect cut points first to enable parallel hashing.
     let chunker = FastCDC::new(
         data,
-        options.min_size as u32,
-        options.avg_size as u32,
-        options.max_size as u32,
+        options.min_size_u32(),
+        options.avg_size_u32(),
+        options.max_size_u32(),
     );
 
     let cut_points: Vec<_> = chunker.collect();
 
     // 2. Hashing Pass (Parallel, CPU-Bound)
     // Rayon will distribute the hashing of chunks across all available cores.
-    let chunks: Result<Vec<ChunkMetadata>, ChunkingError> = cut_points
+    let chunks: Result<Vec<ChunkDescriptor>, ChunkingError> = cut_points
         .par_iter()
         .map(|chunk_def| {
             let offset = chunk_def.offset;
             let length = chunk_def.length;
 
             // Safety check to prevent panics in the thread pool
-            if offset + length > data.len() {
+            if offset
+                .checked_add(length)
+                .is_none_or(|end| end > data.len())
+            {
                 return Err(ChunkingError::Bounds {
                     data_len: data.len(),
                     offset,
@@ -320,11 +410,10 @@ pub fn chunk_data_with_hash(
 
             let hash_array = compute_hash(chunk_slice, hash);
 
-            Ok(ChunkMetadata {
+            Ok(ChunkDescriptor {
                 hash: hash_array,
                 offset: offset as u64,
                 length,
-                payload: Bytes::copy_from_slice(chunk_slice),
             })
         })
         .collect();
@@ -685,11 +774,11 @@ impl<R: Read> Iterator for ChunkStream<R> {
                 Ok(0) => {
                     self.eof = true;
                     self.buffer.truncate(start); // Remove the extra zeros
-                                                 // Loop again to process remainder
+                    // Loop again to process remainder
                 }
                 Ok(n) => {
                     self.buffer.truncate(start + n); // Keep only what we read
-                                                     // Loop again to process
+                    // Loop again to process
                 }
                 Err(e) => {
                     if e.kind() == ErrorKind::Interrupted {
@@ -1117,6 +1206,24 @@ mod tests {
         assert_eq!(sha_chunks.len(), blake_chunks.len());
         // Hashes should differ across algorithms
         assert_ne!(sha_chunks[0].hash, blake_chunks[0].hash);
+        Ok(())
+    }
+
+    #[test]
+    fn test_chunk_descriptors_match_chunk_metadata() -> Result<(), ChunkingError> {
+        let data = b"descriptor parity test payload".repeat(8192);
+        let descriptors = chunk_descriptors(&data, Some(1024), Some(4096), Some(8192))?;
+        let chunks = chunk_data(&data, Some(1024), Some(4096), Some(8192))?;
+
+        assert_eq!(descriptors.len(), chunks.len());
+
+        for (descriptor, chunk) in descriptors.iter().zip(chunks.iter()) {
+            assert_eq!(descriptor.hash, chunk.hash);
+            assert_eq!(descriptor.hash_hex(), chunk.hash_hex());
+            assert_eq!(descriptor.offset, chunk.offset);
+            assert_eq!(descriptor.length, chunk.length);
+        }
+
         Ok(())
     }
 

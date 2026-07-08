@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 #[derive(Debug, thiserror::Error, Clone, Copy)]
 pub enum HashingError {

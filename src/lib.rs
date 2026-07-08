@@ -46,11 +46,11 @@
 //!
 //! When compiled with the `nif` feature, provides Rustler NIF bindings for Elixir.
 
-// otel and nif are mutually exclusive - Tokio runtime inside NIF crashes Erlang VM
-#[cfg(all(feature = "nif", feature = "otel"))]
+// telemetry and nif are mutually exclusive - Tokio runtime inside NIF crashes Erlang VM
+#[cfg(all(feature = "nif", feature = "telemetry"))]
 compile_error!(
-    "The 'nif' and 'otel' features are mutually exclusive. \
-    Enabling 'otel' (Tokio runtime) inside a NIF is unsafe and can crash the Erlang VM. \
+    "The 'nif' and 'telemetry' features are mutually exclusive. \
+    Enabling 'telemetry' (Tokio runtime) inside a NIF is unsafe and can crash the Erlang VM. \
     Use standard logging for NIFs instead."
 );
 
@@ -59,10 +59,13 @@ pub mod compression;
 pub mod hashing;
 pub mod signing;
 
-pub use chunking::{ChunkMetadata, ChunkStream, ChunkingOptions, HashAlgorithm};
+pub use chunking::{ChunkDescriptor, ChunkMetadata, ChunkStream, ChunkingOptions, HashAlgorithm};
 
 #[cfg(feature = "nif")]
 pub mod nif;
+
+#[cfg(feature = "nif")]
+rustler::init!("Elixir.FlakecacheApp.Native.Chunker");
 
 #[cfg(test)]
 mod tests {

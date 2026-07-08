@@ -7,7 +7,6 @@ use rustler::types::binary::OwnedBinary;
 use rustler::{Binary, Env, NifResult};
 
 use crate::{chunking, compression, hashing, signing};
-use std::io::Cursor;
 
 mod atoms {
     rustler::atoms! {
@@ -31,9 +30,6 @@ mod atoms {
         invalid_chunking_options,
     }
 }
-
-// Rustler NIF module initialization
-rustler::init!("Elixir.FlakecacheApp.Native.Chunker");
 
 #[rustler::nif]
 fn enable_logging(level: String) -> NifResult<rustler::Atom> {
@@ -196,32 +192,18 @@ fn chunk_data<'a>(
     max_size: Option<u32>,
 ) -> NifResult<Vec<(String, u64, u64)>> {
     let _ = env;
-    let min = min_size.unwrap_or(256 * 1024) as usize;
-    let avg = avg_size.unwrap_or(1024 * 1024) as usize;
-    let max = max_size.unwrap_or(4 * 1024 * 1024) as usize;
 
-    let cursor = Cursor::new(data.as_slice());
-
-    match chunking::chunk_stream(cursor, Some(min), Some(avg), Some(max)) {
+    match chunking::chunk_descriptors(
+        data.as_slice(),
+        min_size.map(|value| value as usize),
+        avg_size.map(|value| value as usize),
+        max_size.map(|value| value as usize),
+    ) {
         Ok(chunks) => Ok(chunks
             .into_iter()
             .map(|chunk| (chunk.hash_hex(), chunk.offset, chunk.length as u64))
             .collect()),
-        Err(
-            chunking::ChunkingError::Bounds { .. }
-            | chunking::ChunkingError::BufferLimitExceeded { .. },
-        ) => Err(rustler::error::Error::Term(Box::new(
-            atoms::chunk_bounds_invalid(),
-        ))),
-        Err(chunking::ChunkingError::Io(_)) => {
-            Err(rustler::error::Error::Term(Box::new(atoms::io_error())))
-        }
-        Err(chunking::ChunkingError::ZeroLengthChunk) => Err(rustler::error::Error::Term(
-            Box::new(atoms::zero_length_chunk()),
-        )),
-        Err(chunking::ChunkingError::InvalidOptions(_)) => Err(rustler::error::Error::Term(
-            Box::new(atoms::invalid_chunking_options()),
-        )),
+        Err(error) => Err(map_chunking_error(&error)),
     }
 }
 
@@ -234,34 +216,33 @@ fn chunk_data_streaming<'a>(
     max_size: Option<u32>,
 ) -> NifResult<Vec<(String, u64, u64)>> {
     let _ = env;
-    let min = min_size.unwrap_or(256 * 1024) as usize;
-    let avg = avg_size.unwrap_or(1024 * 1024) as usize;
-    let max = max_size.unwrap_or(4 * 1024 * 1024) as usize;
 
-    let cursor = Cursor::new(data.as_slice());
-    let stream = chunking::ChunkStream::new(cursor, Some(min), Some(avg), Some(max))
-        .map_err(|_| rustler::error::Error::Term(Box::new(atoms::invalid_chunking_options())))?;
-
-    let mut chunks = Vec::new();
-    for chunk in stream {
-        let chunk = chunk.map_err(|err| match err {
-            chunking::ChunkingError::Bounds { .. }
-            | chunking::ChunkingError::BufferLimitExceeded { .. } => {
-                rustler::error::Error::Term(Box::new(atoms::chunk_bounds_invalid()))
-            }
-            chunking::ChunkingError::Io(_) => {
-                rustler::error::Error::Term(Box::new(atoms::io_error()))
-            }
-            chunking::ChunkingError::ZeroLengthChunk => {
-                rustler::error::Error::Term(Box::new(atoms::zero_length_chunk()))
-            }
-            chunking::ChunkingError::InvalidOptions(_) => {
-                rustler::error::Error::Term(Box::new(atoms::invalid_chunking_options()))
-            }
-        })?;
-
-        chunks.push((chunk.hash_hex(), chunk.offset, chunk.length as u64));
+    match chunking::chunk_descriptors(
+        data.as_slice(),
+        min_size.map(|value| value as usize),
+        avg_size.map(|value| value as usize),
+        max_size.map(|value| value as usize),
+    ) {
+        Ok(chunks) => Ok(chunks
+            .into_iter()
+            .map(|chunk| (chunk.hash_hex(), chunk.offset, chunk.length as u64))
+            .collect()),
+        Err(error) => Err(map_chunking_error(&error)),
     }
+}
 
-    Ok(chunks)
+fn map_chunking_error(error: &chunking::ChunkingError) -> rustler::error::Error {
+    match error {
+        chunking::ChunkingError::Bounds { .. }
+        | chunking::ChunkingError::BufferLimitExceeded { .. } => {
+            rustler::error::Error::Term(Box::new(atoms::chunk_bounds_invalid()))
+        }
+        chunking::ChunkingError::Io(_) => rustler::error::Error::Term(Box::new(atoms::io_error())),
+        chunking::ChunkingError::ZeroLengthChunk => {
+            rustler::error::Error::Term(Box::new(atoms::zero_length_chunk()))
+        }
+        chunking::ChunkingError::InvalidOptions(_) => {
+            rustler::error::Error::Term(Box::new(atoms::invalid_chunking_options()))
+        }
+    }
 }
