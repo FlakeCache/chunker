@@ -3,8 +3,9 @@
 #![allow(clippy::panic)]
 
 use chunker::{chunking::ChunkStream, compression::compress_zstd, hashing::sha256_hash};
-use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use fastcdc::v2020::FastCDC;
+use std::hint::black_box;
 use std::io::Cursor;
 
 fn benchmark_chunking(c: &mut Criterion) {
