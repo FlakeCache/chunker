@@ -59,7 +59,7 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 rustler = { version = "0.37.0", optional = true }
-thiserror = "1.0"
+thiserror = "2.0"
 async-stream = { version = "0.3", optional = true }
 
 # Cryptography
