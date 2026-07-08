@@ -1,7 +1,7 @@
 use chunker::{compression, hashing};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use rand_chacha::ChaCha8Rng;
-use rand_chacha::rand_core::{RngCore, SeedableRng};
+use rand_chacha::rand_core::{Rng, SeedableRng};
 use std::hint::black_box;
 
 fn benchmark_hashing(c: &mut Criterion) {
