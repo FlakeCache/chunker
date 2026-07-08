@@ -1,5 +1,5 @@
 use chunker::chunking::{self, HashAlgorithm};
-use rand::{RngCore, SeedableRng, rngs::StdRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::fs::File;
 use std::io::{BufReader, Write};
 

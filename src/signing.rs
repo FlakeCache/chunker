@@ -1,6 +1,6 @@
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::rngs::OsRng;
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use zeroize::Zeroize;
 
 #[derive(Debug, thiserror::Error, Clone, Copy)]
@@ -21,7 +21,7 @@ pub enum SigningError {
 /// Returns: {:ok, {`secret_key_base64`, `public_key_base64`}}
 #[must_use]
 pub fn generate_keypair() -> (String, String) {
-    let mut csprng = OsRng;
+    let mut csprng = UnwrapErr(SysRng);
     let signing_key = SigningKey::generate(&mut csprng);
     let verifying_key = signing_key.verifying_key();
 
