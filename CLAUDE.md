@@ -10,7 +10,6 @@ Use `just` for all commands - auto-enters nix develop:
 just build        # cargo build
 just build-release # cargo build --release
 just test         # cargo test --all
-just test-telemetry # cargo test with telemetry feature
 just test-nif     # cargo test with nif feature
 just clippy       # run clippy on all feature combos
 just fmt          # cargo fmt
@@ -23,10 +22,7 @@ just --list       # show all commands
 
 - `sha2-asm` - Assembly-optimized SHA2 (default)
 - `nif` - Erlang/Elixir NIF bindings
-- `telemetry` - OpenTelemetry + Tokio runtime
 - `async-stream` - Async streaming support
-
-Note: `nif` and `telemetry` are mutually exclusive.
 
 ## Git Hooks
 

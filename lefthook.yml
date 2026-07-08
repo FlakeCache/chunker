@@ -13,10 +13,6 @@ pre-commit:
       glob: "*.rs"
       run: cargo clippy -- -D warnings
 
-    clippy-telemetry:
-      glob: "*.rs"
-      run: cargo clippy --features telemetry -- -D warnings
-
     clippy-nif:
       glob: "*.rs"
       run: cargo clippy --features nif -- -D warnings
@@ -26,9 +22,6 @@ pre-push:
   commands:
     test-default:
       run: cargo test --release
-
-    test-telemetry:
-      run: cargo test --release --features telemetry
 
     test-nif:
       run: cargo test --release --features nif

@@ -8,29 +8,14 @@
 //! - **Cryptographic signing** (Ed25519)
 //! - **Hash computation** (SHA256, Nix base32)
 //!
-//! ## Observability & Telemetry
+//! ## Observability
 //!
-//! This crate uses the [`tracing`](https://docs.rs/tracing) ecosystem, making it **Telemetry Ready**.
-//!
-//! ### Rust Applications
-//! You can export traces to **Jaeger**, **Datadog**, or **Honeycomb** by installing an OpenTelemetry subscriber in your application binary:
-//!
-//! ```rust,ignore
-//! // In your main.rs
-//! use tracing_subscriber::prelude::*;
-//!
-//! let tracer = opentelemetry_jaeger::new_pipeline()
-//!     .with_service_name("chunker")
-//!     .install_simple()
-//!     .unwrap();
-//!
-//! let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-//! tracing_subscriber::registry().with(telemetry).init();
-//! ```
+//! This crate uses the [`tracing`](https://docs.rs/tracing) ecosystem. Applications that need
+//! distributed tracing should install their own subscriber/exporter at the binary boundary.
 //!
 //! ### Elixir Applications
-//! The NIF exposes `enable_logging/1` for runtime debugging. For full distributed tracing,
-//! you can initialize a Rust-side OpenTelemetry subscriber that correlates with your Elixir traces.
+//! The NIF exposes `enable_logging/1` for runtime debugging. Distributed tracing should be wired
+//! by the host application, not from inside the NIF.
 //!
 //! ## Example
 //!
@@ -45,14 +30,6 @@
 //! ```
 //!
 //! When compiled with the `nif` feature, provides Rustler NIF bindings for Elixir.
-
-// telemetry and nif are mutually exclusive - Tokio runtime inside NIF crashes Erlang VM
-#[cfg(all(feature = "nif", feature = "telemetry"))]
-compile_error!(
-    "The 'nif' and 'telemetry' features are mutually exclusive. \
-    Enabling 'telemetry' (Tokio runtime) inside a NIF is unsafe and can crash the Erlang VM. \
-    Use standard logging for NIFs instead."
-);
 
 pub mod chunking;
 pub mod compression;

@@ -43,14 +43,11 @@ default = ["sha2-asm"]
 # Use assembly-optimized SHA2 (faster hashing on x86_64/aarch64)
 sha2-asm = ["sha2/asm"]
 
-# Erlang/Elixir NIF bindings via Rustler (mutually exclusive with telemetry)
+# Erlang/Elixir NIF bindings via Rustler
 nif = ["rustler"]
 
 # Async streaming support
 async-stream = ["dep:async-stream", "dep:futures"]
-
-# OpenTelemetry instrumentation with Tokio runtime (mutually exclusive with nif)
-telemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:tokio"]
 
 [lib]
 name = "chunker"
@@ -99,13 +96,6 @@ lz4_flex = "0.13.1"
 blake3 = { version = "1.8.2", features = ["rayon"] }
 bytes = "1.11.0"
 rayon = "1.10"
-
-# Telemetry (Optional)
-opentelemetry = { version = "0.22", optional = true }
-opentelemetry_sdk = { version = "0.22", features = ["rt-tokio"], optional = true }
-opentelemetry-otlp = { version = "0.15", optional = true }
-tracing-opentelemetry = { version = "0.23", optional = true }
-tokio = { version = "1.36", features = ["full"], optional = true }
 
 [dev-dependencies]
 tempfile = "3.12.0"

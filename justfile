@@ -20,10 +20,6 @@ build-release:
 test:
     cargo test --all
 
-# Run tests with telemetry feature
-test-telemetry:
-    cargo test --all --features telemetry
-
 # Run tests with nif feature
 test-nif:
     cargo test --all --features nif
@@ -31,7 +27,6 @@ test-nif:
 # Run clippy on all feature combinations
 clippy:
     cargo clippy -- -D warnings
-    cargo clippy --features telemetry -- -D warnings
     cargo clippy --features nif -- -D warnings
 
 # Format code
@@ -69,5 +64,5 @@ fuzz:
     cd fuzz && cargo fuzz run signing --max-len=1000 -- -max_total_time=10
 
 # Full CI check (what CI runs)
-ci: fmt-check clippy test test-telemetry test-nif
+ci: fmt-check clippy test test-nif
     @echo "All CI checks passed!"

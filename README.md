@@ -50,32 +50,11 @@ cargo build --release # optimized
 
 CPU note: numbers are from `benchmarks/latest.md` generated with `RUSTFLAGS="-C target-cpu=native"` and a release benchmark build. Rerun `just bench` or `cargo bench` on your hardware (x86_64/ARM) to get local figures.
 
-## Telemetry & Observability
+## Observability
 
-By default, `chunker` uses standard logging (via `tracing`) which prints to stderr. This is ideal for CLI usage and simple debugging.
+`chunker` emits `tracing` events and metrics from the library hot paths. Applications that need OTLP, Jaeger, Datadog, Honeycomb, or another backend should install the exporter/subscriber at the binary or host application boundary.
 
-For production deployments or performance analysis, you can enable the `telemetry` feature. This switches the binary to use:
-- **Tokio Runtime**: For async telemetry export.
-- **OTLP Exporter**: Sends traces to Jaeger, Honeycomb, or any OpenTelemetry collector.
-- **Async Pipeline**: Ensures telemetry doesn't block the main chunking loop.
-
-**When to use `telemetry`:**
-- **CLI Binary**: Enable for production/profiling (`cargo build --release --features telemetry`).
-- **Build Runners / CI**: Perfect for monitoring chunking performance in CI pipelines.
-- **Elixir NIF**: **Do not enable**. The NIF uses `tracing` but relies on the host VM or simple logging. Enabling the `telemetry` feature (and its Tokio runtime) inside a NIF is not recommended.
-
-```bash
-# Build with full telemetry support (CLI only)
-cargo build --release --features telemetry
-
-# Run with a local Jaeger instance
-docker run -d -p 4317:4317 -p 16686:16686 jaegertracing/all-in-one:latest
-./target/release/chunker large_file.bin
-
-# Pipeline usage (reading from stdin)
-# Useful for streaming data from S3 or build artifacts directly
-aws s3 cp s3://bucket/file.tar.gz - | ./target/release/chunker -
-```
+For Elixir, use the NIF `enable_logging/1` helper for runtime debugging and wire distributed tracing in the BEAM application.
 
 ## License
 Apache-2.0
