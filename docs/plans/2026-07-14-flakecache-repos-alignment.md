@@ -50,7 +50,16 @@ engine/ products/ deployment/` — **no `substrate/`**).
 - **Deploy:** K8s + Flux; wiring in `/srv/infra/clusters/default/tenants/shared/apps/flakecache/`
   (migrating into `deployment/gitops/` per REPO.md). **Fly.io is retired** ("do not revive").
 
-## The one real decision — fabric vs. server data path
+## The one real decision — fabric vs. server data path — RESOLVED (A, phased)
+
+**Decision (2026-07-14, [ADR 0003](../adr/0003-fabric-is-the-data-plane.md)):** adopt
+**(A)** — the fabric is the data plane — but delivered as a **`FabricBackend`
+implementing `server`'s existing `@behaviour Storage.Backend`**, not a rewrite.
+`server` keeps every protocol + auth + billing + signing; the fabric owns only the
+bytes (dedup + self-heal + tiering), reversible to `S3Backend`, canary-able per cache.
+Phased: cold backend → auth → `FabricBackend` adapter → one-cache canary → broaden.
+The rest of this section is the original framing that led there.
+
 
 `server` already serves Nix + sccache + GHA cache + warm/cold tiering **in prod**.
 The `chunker/node` fabric (Rust swarm, content-defined dedup, self-heal) is a
@@ -82,10 +91,10 @@ replacement of server. Pick A or B deliberately.
 - **fabric node-local metadata:** `redb` (crash-safe) now → VectorDrive graph engine
   when its WAL is crash-tested. Fabric-only; server stays on CNPG.
 
-## Next actions (not yet done)
+## Next actions
 
-1. Decide **A vs B** for the fabric.
-2. If A: define server → fabric storage-delegation contract; wire fabric into
-   `deployment/gitops/`; plan the `cache.flakecache.com/default` cutover (needs the
-   real `default` key + auth — the node is currently unauthenticated).
-3. Land the taxonomy placement in each repo's plan surface (this pass adds pointers).
+1. ✅ **Decided A** (fabric = data plane via `server` `Storage.Backend` adapter) — [ADR 0003](../adr/0003-fabric-is-the-data-plane.md).
+2. **Phase 1** — fabric **cold backend** (Garage S3 / StorageBox write-through) so blobs are durable. *[chunker, next]*
+3. **Phase 2** — fabric **auth** (verify `server`-minted signed tokens).
+4. **Phase 3** — `FabricBackend` adapter in `server`; **Phase 4** — one-cache canary with `S3Backend` fallback; **Phase 5** — broaden + `default` cutover.
+5. ✅ Taxonomy placement landed in each repo (`ALIGNMENT.md`).
