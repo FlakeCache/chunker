@@ -1,0 +1,24 @@
+[package]
+name = "flakecache-backend"
+version = "0.1.0"
+edition = "2024"
+description = "Blob backends for FlakeCache: in-memory + warm/cold tiering over the CAS BlobBackend trait"
+license = "MIT"
+repository = "https://github.com/FlakeCache/chunker"
+rust-version = "1.85"
+readme = "README.md"
+keywords = ["content-addressed", "storage", "tiering", "cache", "flakecache"]
+categories = ["caching", "filesystem"]
+
+[dependencies]
+flakecache-cas = { path = "../core/cas" }
+bytes = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
