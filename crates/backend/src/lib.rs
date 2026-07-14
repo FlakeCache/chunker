@@ -5,19 +5,23 @@
 //! backend in `flakecache-cas`:
 //!
 //! - [`MemoryBackend`] — an in-process thread-safe store (tests, ephemeral use).
+//! - [`S3Backend`] — a durable, path-style, AWS-SigV4 S3-compatible cold tier.
 //! - [`TieredBackend`] — warm/cold tiering: `put` writes the durable cold tier
 //!   first then warm; `get` serves from warm, falling back to cold and promoting
 //!   (write-back) the bytes into warm so the next read is local.
 //!
-//! The cold tier (S3, Hetzner Storage Box) is a separate object/SFTP backend,
-//! layered later over the same trait. Nothing here stores a whole undeduplicated
-//! blob; callers store `FastCDC` chunks addressed by content hash.
+//! Nothing here stores a whole undeduplicated blob; callers store `FastCDC`
+//! chunks addressed by content hash.
 
 use std::collections::HashMap;
 use std::sync::{PoisonError, RwLock};
 
 use bytes::Bytes;
 use flakecache_cas::{BlobBackend, CasError, ContentId};
+
+mod s3;
+
+pub use s3::{S3Backend, S3Config};
 
 /// An in-process, thread-safe blob store backed by a `HashMap`.
 ///
@@ -39,7 +43,10 @@ impl MemoryBackend {
     /// Number of stored blobs.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.blobs.read().unwrap_or_else(PoisonError::into_inner).len()
+        self.blobs
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     /// Whether the backend holds no blobs.

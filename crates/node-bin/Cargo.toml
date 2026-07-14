@@ -12,6 +12,7 @@ categories = ["caching", "command-line-utilities"]
 
 [dependencies]
 flakecache-node = { path = "../node" }
+flakecache-backend = { path = "../backend" }
 flakecache-cas = { path = "../core/cas" }
 flakecache-meta = { path = "../core/meta" }
 flakecache-crypto = { path = "../core/crypto", default-features = false, features = ["ed25519"] }

@@ -11,6 +11,10 @@ Blob backends implementing the CAS [`BlobBackend`] trait.
     **promotes** (write-back) the bytes into warm so the next read is local.
 
 The `Warm` tier is typically the node's local disk (`flakecache_cas::FilesystemBackend`);
-the `Cold` tier is an object/SFTP backend (S3, Hetzner Storage Box) — those cold
-implementations are follow-ups; the tiering here works over any `BlobBackend`.
-Nothing stores a whole undeduplicated blob: callers store FastCDC chunks by content hash.
+the durable cold tier can be `S3Backend`, configured with
+`FLAKECACHE_S3_ENDPOINT`, `FLAKECACHE_S3_BUCKET`, `FLAKECACHE_S3_REGION`,
+`FLAKECACHE_S3_ACCESS_KEY_ID`, `FLAKECACHE_S3_SECRET_ACCESS_KEY`, and optional
+`FLAKECACHE_S3_PREFIX`. S3 requests use Garage-compatible path-style URLs,
+rustls, and AWS SigV4. The tiering remains generic over any `BlobBackend`, so a
+Hetzner Storage Box implementation can be added independently. Nothing stores a
+whole undeduplicated blob: callers store FastCDC chunks by content hash.
