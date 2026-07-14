@@ -2,6 +2,14 @@
 
 Status: accepted · 2026-07-14 · supersedes the "own key per node" sketch in discussion
 
+> **Reality check (2026-07-14):** the production `flakecache/server` (Elixir)
+> **already implements zero-knowledge per-cache signing** — `caches` stores only
+> `signing_public_key` (no secret column) and the server persists pusher-supplied
+> signatures verbatim. So the "default" model below is not aspirational; it is the
+> shipped reference. The fabric node's contribution is the *managed server-side
+> re-sign* mode (below), which fixes *unsigned* CI pushes. See
+> [`../plans/2026-07-14-flakecache-repos-alignment.md`](../plans/2026-07-14-flakecache-repos-alignment.md).
+
 ## Context
 
 FlakeCache is a **multi-tenant** commercial Nix binary cache. The trust model —

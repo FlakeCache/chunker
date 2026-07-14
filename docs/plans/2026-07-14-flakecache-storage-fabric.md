@@ -4,6 +4,15 @@
 > session, so per the goal-setting contract this durable doc stands in for host
 > goal mode. Architecture rationale lives in
 > [`docs/adr/0001-flakecache-distributed-storage-fabric.md`](../adr/0001-flakecache-distributed-storage-fabric.md).
+>
+> **Reality check (2026-07-14):** the *current* production FlakeCache is
+> `flakecache/server` (Elixir) on K8s + **CNPG + Garage + StorageBox** — **not**
+> VectorDrive. This fabric is the *next-gen distributed data-plane* candidate, not
+> the shipped system; VectorDrive (graph engine) is a **fabric-only, node-local**
+> future for the chunk DAG, gated on its WAL being crash-tested — never the current
+> central plane. See
+> [`2026-07-14-flakecache-repos-alignment.md`](2026-07-14-flakecache-repos-alignment.md)
+> for how this fabric relates to `server` and every other `flakecache/*` repo.
 
 ## Goal contract
 
