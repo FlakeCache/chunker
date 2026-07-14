@@ -47,3 +47,4 @@ chunker-*.tar.gz
 flake.lock
 artifacts/
 dist/
+.codex-worktrees/

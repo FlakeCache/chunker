@@ -1,0 +1,26 @@
+[package]
+name = "flakecache-crypto"
+version = "0.1.0"
+edition = "2024"
+description = "no_std cryptographic primitives for FlakeCache content-addressed storage"
+license = "MIT"
+repository = "https://github.com/FlakeCache/chunker"
+rust-version = "1.85"
+readme = "README.md"
+keywords = ["content-addressed", "cryptography", "ed25519", "shake", "flakecache"]
+categories = ["cryptography", "no-std"]
+
+[features]
+default = ["ed25519"]
+std = []
+ed25519 = ["dep:ed25519-dalek"]
+
+[dependencies]
+shake = { version = "0.1", default-features = false }
+ed25519-dalek = { version = "3", default-features = false, features = ["alloc", "fast", "zeroize"], optional = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
