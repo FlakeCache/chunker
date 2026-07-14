@@ -161,6 +161,18 @@ impl<B: BlobBackend> Node<B> {
         Ok(())
     }
 
+    /// The manifest anchored by `tag`, or `None` if the tag is unset.
+    ///
+    /// The inverse of [`Node::set_tag`]: a durable name -> manifest lookup, so a
+    /// caller that ingested bytes under a tag can later retrieve them by that tag
+    /// across process restarts.
+    ///
+    /// # Errors
+    /// Returns a [`NodeError`] if the metadata read fails.
+    pub fn get_tag(&self, tag: &str) -> Result<Option<ContentId>, NodeError> {
+        Ok(self.meta.get_root(tag)?)
+    }
+
     /// The chunks no longer reachable from any tag (the GC sweep set).
     ///
     /// # Errors
@@ -205,7 +217,10 @@ mod tests {
         let data = pseudo_random(42, 500_000);
         let manifest = node.put(&data)?;
         assert_eq!(node.get(manifest)?.as_deref(), Some(&data[..]));
-        assert_eq!(node.get(ContentId::compute(ObjectKind::Level1Manifest, b"nope"))?, None);
+        assert_eq!(
+            node.get(ContentId::compute(ObjectKind::Level1Manifest, b"nope"))?,
+            None
+        );
         Ok(())
     }
 
@@ -253,6 +268,25 @@ mod tests {
     }
 
     #[test]
+    fn tag_round_trips_to_manifest() -> Result<(), NodeError> {
+        let (node, _dir) = node();
+        let data = pseudo_random(11, 120_000);
+        let manifest = node.put(&data)?;
+
+        assert_eq!(node.get_tag("unset")?, None);
+        node.set_tag("release", manifest)?;
+        assert_eq!(
+            node.get_tag("release")?,
+            Some(manifest),
+            "tag resolves to the manifest"
+        );
+        // And the tag is a durable retrieval handle: resolve then reassemble.
+        let resolved = node.get_tag("release")?.unwrap();
+        assert_eq!(node.get(resolved)?.as_deref(), Some(&data[..]));
+        Ok(())
+    }
+
+    #[test]
     fn gc_identifies_unreferenced_chunks() -> Result<(), NodeError> {
         let (node, _dir) = node();
         let data = pseudo_random(9, 200_000);
@@ -262,7 +296,10 @@ mod tests {
         assert!(!node.collectible_chunks()?.is_empty());
         // Tag it -> nothing collectible.
         node.set_tag("release", manifest)?;
-        assert!(node.collectible_chunks()?.is_empty(), "tagged artifact keeps its chunks");
+        assert!(
+            node.collectible_chunks()?.is_empty(),
+            "tagged artifact keeps its chunks"
+        );
         Ok(())
     }
 }

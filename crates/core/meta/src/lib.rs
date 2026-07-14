@@ -160,6 +160,28 @@ impl MetaStore {
         Ok(())
     }
 
+    /// The manifest anchored by root `name`, or `None` if no such root exists.
+    ///
+    /// # Errors
+    /// Returns a [`MetaError`] on a table read failure, or [`MetaError::CorruptManifest`]
+    /// if the stored value is not exactly 32 bytes.
+    pub fn get_root(&self, name: &str) -> Result<Option<ContentId>, MetaError> {
+        let txn = self.db.begin_read()?;
+        let roots = match txn.open_table(ROOTS) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        let Some(value) = roots.get(name)? else {
+            return Ok(None);
+        };
+        let bytes: [u8; 32] = value
+            .value()
+            .try_into()
+            .map_err(|_| MetaError::CorruptManifest(value.value().len()))?;
+        Ok(Some(ContentId::from_bytes(bytes)))
+    }
+
     /// Remove the live reference `name`.
     ///
     /// # Errors
@@ -268,7 +290,10 @@ mod tests {
         let m2 = manifest(b"m2"); // [c2, c3]  (c2 shared -> deduped)
 
         assert!(meta.put_manifest(m1, &[c1, c2])?, "first insert is new");
-        assert!(!meta.put_manifest(m1, &[c1, c2])?, "re-insert is idempotent");
+        assert!(
+            !meta.put_manifest(m1, &[c1, c2])?,
+            "re-insert is idempotent"
+        );
         assert!(meta.put_manifest(m2, &[c2, c3])?);
 
         assert_eq!(meta.refcount(c1)?, 1);
@@ -297,6 +322,24 @@ mod tests {
     }
 
     #[test]
+    fn get_root_reads_back_the_anchored_manifest() -> Result<(), MetaError> {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = MetaStore::open(dir.path().join("meta.redb"))?;
+        let m = manifest(b"m");
+
+        assert_eq!(meta.get_root("absent")?, None, "unset root is None");
+        meta.set_root("tag", m)?;
+        assert_eq!(
+            meta.get_root("tag")?,
+            Some(m),
+            "reads back the exact manifest id"
+        );
+        meta.remove_root("tag")?;
+        assert_eq!(meta.get_root("tag")?, None, "removed root is None again");
+        Ok(())
+    }
+
+    #[test]
     fn survives_reopen() -> Result<(), MetaError> {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("meta.redb");
@@ -310,7 +353,10 @@ mod tests {
         let meta = MetaStore::open(&path)?;
         assert_eq!(meta.refcount(c)?, 1);
         assert_eq!(meta.get_manifest(m)?, Some(vec![c]));
-        assert!(meta.collectible_chunks()?.is_empty(), "root keeps it alive across reopen");
+        assert!(
+            meta.collectible_chunks()?.is_empty(),
+            "root keeps it alive across reopen"
+        );
         Ok(())
     }
 }
