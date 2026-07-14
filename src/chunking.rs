@@ -188,10 +188,33 @@ impl ChunkingOptions {
     }
 
     fn validate(&self) -> Result<(), ChunkingError> {
-        if self.min_size < 64 {
-            return Err(ChunkingError::InvalidOptions(
-                "min_size must be >= 64".into(),
-            ));
+        use fastcdc::v2020::{
+            AVERAGE_MAX, AVERAGE_MIN, MAXIMUM_MAX, MAXIMUM_MIN, MINIMUM_MAX, MINIMUM_MIN,
+        };
+
+        // Each size must lie within FastCDC v2020's supported range. Out-of-range
+        // sizes make FastCDC panic (an index-out-of-bounds in its gear-mask math,
+        // even in release builds where its own `debug_assert!`s are compiled out).
+        // Across the NIF boundary that panic would poison the per-upload resource
+        // mutex, so reject early with a precise error instead. Reference:
+        // fastcdc::v2020 {MINIMUM,AVERAGE,MAXIMUM}_{MIN,MAX} constants.
+        if !(MINIMUM_MIN..=MINIMUM_MAX).contains(&self.min_size) {
+            return Err(ChunkingError::InvalidOptions(format!(
+                "min_size must be in {MINIMUM_MIN}..={MINIMUM_MAX}, got {}",
+                self.min_size
+            )));
+        }
+        if !(AVERAGE_MIN..=AVERAGE_MAX).contains(&self.avg_size) {
+            return Err(ChunkingError::InvalidOptions(format!(
+                "avg_size must be in {AVERAGE_MIN}..={AVERAGE_MAX}, got {}",
+                self.avg_size
+            )));
+        }
+        if !(MAXIMUM_MIN..=MAXIMUM_MAX).contains(&self.max_size) {
+            return Err(ChunkingError::InvalidOptions(format!(
+                "max_size must be in {MAXIMUM_MIN}..={MAXIMUM_MAX}, got {}",
+                self.max_size
+            )));
         }
         if self.min_size > self.avg_size {
             return Err(ChunkingError::InvalidOptions(
@@ -201,11 +224,6 @@ impl ChunkingOptions {
         if self.avg_size > self.max_size {
             return Err(ChunkingError::InvalidOptions(
                 "avg_size must be <= max_size".into(),
-            ));
-        }
-        if self.max_size > 1024 * 1024 * 1024 {
-            return Err(ChunkingError::InvalidOptions(
-                "max_size must be <= 1GB".into(),
             ));
         }
 
@@ -511,173 +529,193 @@ impl<R: Read> ChunkStream<R> {
     }
 }
 
-impl<R: Read> Iterator for ChunkStream<R> {
-    type Item = Result<ChunkMetadata, ChunkingError>;
+/// Drain every chunk whose content-defined boundary is now final from `buffer`,
+/// advancing `position` and removing the emitted bytes. A partial trailing chunk
+/// (one that touches the buffer end, is below `max_size`, and is not at EOF) is
+/// retained in `buffer` for the next call. When `eof` is true the trailing
+/// remainder is emitted as the final chunk(s).
+///
+/// This is the single source of truth for streaming chunk boundaries, shared by
+/// the pull-based [`ChunkStream`] and the push-based [`PushChunker`] so both
+/// stay byte-identical to the in-memory [`chunk_data_with_hash`].
+fn drain_finalized_chunks(
+    buffer: &mut BytesMut,
+    position: &mut u64,
+    options: &ChunkingOptions,
+    hash: HashAlgorithm,
+    eof: bool,
+) -> Result<Vec<ChunkMetadata>, ChunkingError> {
+    let mut emitted: Vec<ChunkMetadata> = Vec::new();
 
-    #[allow(clippy::too_many_lines)]
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(chunk) = self.pending_chunks.pop_front() {
-            return Some(chunk);
+    // FastCDC cannot produce a chunk smaller than min_size unless it is the final
+    // chunk, so skip the pass entirely while the buffer is still too small.
+    if !buffer.is_empty() && (buffer.len() >= options.min_size || eof) {
+        let cdc = FastCDC::new(
+            &buffer[..],
+            options.min_size,
+            options.avg_size,
+            options.max_size,
+        );
+
+        let mut cut_points = Vec::new();
+        let mut total_len = 0usize;
+
+        for chunk in cdc {
+            let len = chunk.length;
+            let offset = chunk.offset;
+
+            // FastCDC must never emit a zero-length chunk.
+            if len == 0 {
+                return Err(ChunkingError::ZeroLengthChunk);
+            }
+            // The first chunk of a slice must start at offset 0.
+            if cut_points.is_empty() && offset != 0 {
+                return Err(ChunkingError::Io(std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    format!("FastCDC returned non-zero offset {offset} for first chunk"),
+                )));
+            }
+
+            // A chunk touching the buffer end that is below max_size and not at
+            // EOF is only partial — retain it until more bytes arrive.
+            let touches_end = offset + len == buffer.len();
+            if touches_end && !eof && len < options.max_size {
+                break;
+            }
+
+            cut_points.push(chunk);
+            total_len += len;
         }
 
-        loop {
-            // 1. Try to find chunks in the current buffer
-            // Early-exit: skip FastCDC iteration if buffer is smaller than min_size and not at EOF
-            // FastCDC cannot produce a chunk smaller than min_size unless it's the final chunk.
-            if !self.buffer.is_empty() && (self.buffer.len() >= self.min_size || self.eof) {
-                // Create a FastCDC iterator over the buffer using validated params.
-                let cdc = FastCDC::new(&self.buffer, self.min_size, self.avg_size, self.max_size);
+        if !cut_points.is_empty() {
+            // Detach the finalized region in one shot; the retained tail stays.
+            let batch_data = buffer.split_to(total_len).freeze();
+            let base_position = *position;
 
-                // Collect all valid cut points in the current buffer
-                let mut cut_points = Vec::new();
-                let mut total_len = 0;
-
-                for chunk in cdc {
+            let process_chunk =
+                |chunk: &fastcdc::v2020::Chunk| -> Result<ChunkMetadata, ChunkingError> {
                     let len = chunk.length;
                     let offset = chunk.offset;
 
-                    // Safety check: FastCDC should never return a zero-length chunk
-                    if len == 0 {
-                        return Some(Err(ChunkingError::ZeroLengthChunk));
-                    }
-
-                    // Safety check: FastCDC should start at 0 for the first chunk in the slice
-                    // Subsequent chunks will have offset > 0 relative to the start of the buffer
-                    if cut_points.is_empty() && offset != 0 {
-                        return Some(Err(std::io::Error::new(
-                            ErrorKind::InvalidData,
-                            format!("FastCDC returned non-zero offset {offset} for first chunk"),
-                        )
-                        .into()));
-                    }
-
-                    // Check if this chunk is "complete"
-                    // If it touches the end of the buffer, and we are not at EOF, and it's smaller than max_size,
-                    // it might be a partial chunk (FastCDC didn't find a cut point yet).
-                    let touches_end = offset + len == self.buffer.len();
-                    if touches_end && !self.eof && len < self.max_size {
-                        break;
-                    }
-
-                    cut_points.push(chunk);
-                    total_len += len;
-                }
-
-                if !cut_points.is_empty() {
-                    // Extract the data for all valid chunks at once
-                    // This advances the buffer by total_len
-                    let batch_data = self.buffer.split_to(total_len).freeze();
-
-                    // Process chunks in parallel (hashing)
-                    // We map the cut points to ChunkMetadata
-                    let current_position = self.position;
-                    let hash_algo = self.hash;
-
-                    // Helper closure for processing a single chunk
-                    let process_chunk = |chunk: &fastcdc::v2020::Chunk| {
-                        let len = chunk.length;
-                        let offset = chunk.offset;
-
-                        // Safety check with overflow protection
-                        if offset
-                            .checked_add(len)
-                            .is_none_or(|end| end > batch_data.len())
-                        {
-                            return Err(ChunkingError::Bounds {
-                                data_len: batch_data.len(),
-                                offset,
-                                length: len,
-                            });
-                        }
-
-                        let chunk_slice = batch_data.slice(offset..offset + len);
-
-                        // Metrics (thread-safe, using cached handles)
-                        let m = get_metrics();
-                        m.chunks_emitted.increment(1);
-                        m.bytes_processed.increment(len as u64);
-                        m.chunk_size.record(len as f64);
-
-                        let hash_array = compute_hash(&chunk_slice, hash_algo);
-
-                        let chunk_offset = current_position + offset as u64;
-
-                        if tracing::enabled!(tracing::Level::TRACE)
-                            && TRACE_SAMPLE_COUNTER
-                                .fetch_add(1, Ordering::Relaxed)
-                                .is_multiple_of(TRACE_SAMPLE_EVERY)
-                        {
-                            trace!(offset = chunk_offset, length = len, "chunk_emitted");
-                        }
-
-                        Ok(ChunkMetadata {
-                            hash: hash_array,
-                            offset: chunk_offset,
-                            length: len,
-                            payload: chunk_slice,
-                        })
-                    };
-
-                    let chunks: Vec<Result<ChunkMetadata, ChunkingError>> = if cut_points.len() > 4
+                    if offset
+                        .checked_add(len)
+                        .is_none_or(|end| end > batch_data.len())
                     {
-                        cut_points.par_iter().map(process_chunk).collect()
-                    } else {
-                        cut_points.iter().map(process_chunk).collect()
-                    };
+                        return Err(ChunkingError::Bounds {
+                            data_len: batch_data.len(),
+                            offset,
+                            length: len,
+                        });
+                    }
 
-                    // Update position
-                    self.position += total_len as u64;
+                    let chunk_slice = batch_data.slice(offset..offset + len);
 
-                    // Push to pending queue
-                    self.pending_chunks.extend(chunks);
+                    let m = get_metrics();
+                    m.chunks_emitted.increment(1);
+                    m.bytes_processed.increment(len as u64);
+                    m.chunk_size.record(len as f64);
 
-                    // Return the first one immediately
-                    return self.pending_chunks.pop_front();
-                }
+                    let hash_array = compute_hash(&chunk_slice, hash);
+                    let chunk_offset = base_position + offset as u64;
+
+                    if tracing::enabled!(tracing::Level::TRACE)
+                        && TRACE_SAMPLE_COUNTER
+                            .fetch_add(1, Ordering::Relaxed)
+                            .is_multiple_of(TRACE_SAMPLE_EVERY)
+                    {
+                        trace!(offset = chunk_offset, length = len, "chunk_emitted");
+                    }
+
+                    Ok(ChunkMetadata {
+                        hash: hash_array,
+                        offset: chunk_offset,
+                        length: len,
+                        payload: chunk_slice,
+                    })
+                };
+
+            let produced: Result<Vec<ChunkMetadata>, ChunkingError> = if cut_points.len() > 4 {
+                cut_points.par_iter().map(process_chunk).collect()
+            } else {
+                cut_points.iter().map(process_chunk).collect()
+            };
+
+            emitted.extend(produced?);
+            *position += total_len as u64;
+        }
+    }
+
+    // Defensive: at EOF the pass above drains the whole buffer, but if anything
+    // remains (e.g. a buffer below min_size that produced no cut points) emit it
+    // as the final chunk so no bytes are dropped.
+    if eof && !buffer.is_empty() {
+        let len = buffer.len();
+        let chunk_data = buffer.split_to(len).freeze();
+
+        let m = get_metrics();
+        m.chunks_emitted.increment(1);
+        m.bytes_processed.increment(len as u64);
+        m.chunk_size.record(len as f64);
+
+        let hash_array = compute_hash(&chunk_data, hash);
+        let chunk_offset = *position;
+        *position += len as u64;
+
+        emitted.push(ChunkMetadata {
+            hash: hash_array,
+            offset: chunk_offset,
+            length: len,
+            payload: chunk_data,
+        });
+    }
+
+    Ok(emitted)
+}
+
+impl<R: Read> Iterator for ChunkStream<R> {
+    type Item = Result<ChunkMetadata, ChunkingError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(chunk) = self.pending_chunks.pop_front() {
+                return Some(chunk);
             }
 
-            // 2. If no chunk found, or buffer empty, we need more data.
+            let options = ChunkingOptions {
+                min_size: self.min_size,
+                avg_size: self.avg_size,
+                max_size: self.max_size,
+            };
+
+            match drain_finalized_chunks(
+                &mut self.buffer,
+                &mut self.position,
+                &options,
+                self.hash,
+                self.eof,
+            ) {
+                Ok(chunks) => {
+                    if !chunks.is_empty() {
+                        self.pending_chunks.extend(chunks.into_iter().map(Ok));
+                        continue;
+                    }
+                }
+                Err(e) => return Some(Err(e)),
+            }
+
+            // Nothing more can be finalized from the current buffer.
             if self.eof {
-                // If we are at EOF and still have data in buffer, it means FastCDC didn't find a cut point.
-                // This is the last chunk (remainder).
-                if self.buffer.is_empty() {
-                    return None;
-                }
-
-                let len = self.buffer.len();
-                let chunk_data = self.buffer.split_to(len).freeze();
-
-                // Metrics (using cached handles)
-                let m = get_metrics();
-                m.chunks_emitted.increment(1);
-                m.bytes_processed.increment(len as u64);
-                m.chunk_size.record(len as f64);
-
-                let hash_array = compute_hash(&chunk_data, self.hash);
-
-                let chunk_offset = self.position;
-                self.position += len as u64;
-
-                return Some(Ok(ChunkMetadata {
-                    hash: hash_array,
-                    offset: chunk_offset,
-                    length: len,
-                    payload: chunk_data,
-                }));
+                return None;
             }
 
-            // 3. Read more data (cap per-read to avoid huge allocations)
-            // We increase the read size to encourage batching (e.g. 8x max_size)
+            // Read more data (cap per-read to avoid huge allocations); we target
+            // ~8x max_size to encourage batching.
             let slice_cap = effective_read_slice_cap();
             let target_read = std::cmp::max(self.max_size * 8, 4 * 1024 * 1024);
             let read_size =
                 std::cmp::max(std::cmp::min(target_read, slice_cap), MIN_READ_SLICE_CAP);
 
-            // Reserve space
             self.buffer.reserve(read_size);
-
-            // Read into the buffer
-            // Using resize to zero-init (safe)
             let start = self.buffer.len();
             self.buffer.resize(start + read_size, 0);
 
@@ -685,11 +723,9 @@ impl<R: Read> Iterator for ChunkStream<R> {
                 Ok(0) => {
                     self.eof = true;
                     self.buffer.truncate(start); // Remove the extra zeros
-                    // Loop again to process remainder
                 }
                 Ok(n) => {
                     self.buffer.truncate(start + n); // Keep only what we read
-                    // Loop again to process
                 }
                 Err(e) => {
                     if e.kind() == ErrorKind::Interrupted {
@@ -700,6 +736,95 @@ impl<R: Read> Iterator for ChunkStream<R> {
                 }
             }
         }
+    }
+}
+
+/// A push-fed incremental chunker for streaming ingest.
+///
+/// The caller feeds byte slices as they arrive (e.g. an HTTP upload body read in
+/// bounded slices) and receives the chunks whose content-defined boundaries are
+/// now final, each carrying its payload so it can be stored inline. Peak memory
+/// is one retained tail (below `max_size`) plus the current slice — independent
+/// of total artifact size. Backpressure is the caller's synchronous
+/// read → push → store loop: nothing is read from the socket until the prior
+/// slice's chunks have been stored. Boundaries are byte-identical to
+/// [`chunk_data_with_hash`] via the shared [`drain_finalized_chunks`].
+#[derive(Debug)]
+pub struct PushChunker {
+    buffer: BytesMut,
+    options: ChunkingOptions,
+    hash: HashAlgorithm,
+    position: u64,
+    finished: bool,
+}
+
+impl PushChunker {
+    /// Create a push chunker with optional size overrides and an explicit hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ChunkingError::InvalidOptions` if the sizes are invalid.
+    pub fn new(
+        min_size: Option<usize>,
+        avg_size: Option<usize>,
+        max_size: Option<usize>,
+        hash: HashAlgorithm,
+    ) -> Result<Self, ChunkingError> {
+        Ok(Self {
+            buffer: BytesMut::new(),
+            options: ChunkingOptions::resolve(min_size, avg_size, max_size)?,
+            hash,
+            position: 0,
+            finished: false,
+        })
+    }
+
+    /// Feed more bytes; returns the chunks whose boundaries are now final.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ChunkingError` if called after [`finish`](Self::finish), or if a
+    /// finalized chunk cannot be produced.
+    pub fn push(&mut self, data: &[u8]) -> Result<Vec<ChunkMetadata>, ChunkingError> {
+        if self.finished {
+            return Err(ChunkingError::InvalidOptions(
+                "push called after finish".into(),
+            ));
+        }
+        if data.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.buffer.extend_from_slice(data);
+        drain_finalized_chunks(
+            &mut self.buffer,
+            &mut self.position,
+            &self.options,
+            self.hash,
+            false,
+        )
+    }
+
+    /// Flush the trailing remainder. Returns the final chunk(s); after this,
+    /// further [`push`](Self::push) calls error.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ChunkingError` if the final chunk cannot be produced.
+    pub fn finish(&mut self) -> Result<Vec<ChunkMetadata>, ChunkingError> {
+        self.finished = true;
+        drain_finalized_chunks(
+            &mut self.buffer,
+            &mut self.position,
+            &self.options,
+            self.hash,
+            true,
+        )
+    }
+
+    /// Total bytes fed so far (emitted + still buffered).
+    #[must_use]
+    pub fn bytes_consumed(&self) -> u64 {
+        self.position + self.buffer.len() as u64
     }
 }
 
@@ -1233,35 +1358,44 @@ mod tests {
     }
 
     #[test]
-    fn test_max_size_validation_at_boundary() {
-        let result = ChunkingOptions::resolve(
-            Some(64),
-            Some(1024),
-            Some(1024 * 1024 * 1024), // 1GB - at the limit
+    fn test_size_validation_at_fastcdc_boundaries() {
+        use fastcdc::v2020::{AVERAGE_MAX, MAXIMUM_MAX, MINIMUM_MAX};
+        // The exact upper bounds FastCDC v2020 supports must be accepted (and are
+        // themselves consistent: MINIMUM_MAX <= AVERAGE_MAX <= MAXIMUM_MAX).
+        let result =
+            ChunkingOptions::resolve(Some(MINIMUM_MAX), Some(AVERAGE_MAX), Some(MAXIMUM_MAX));
+        assert!(
+            result.is_ok(),
+            "FastCDC boundary maxima must be accepted: {result:?}"
         );
-        assert!(result.is_ok());
 
         let options = result.unwrap();
-        assert_eq!(options.min_size, 64);
-        assert_eq!(options.avg_size, 1024);
-        assert_eq!(options.max_size, 1024 * 1024 * 1024);
+        assert_eq!(options.min_size, MINIMUM_MAX);
+        assert_eq!(options.avg_size, AVERAGE_MAX);
+        assert_eq!(options.max_size, MAXIMUM_MAX);
     }
 
     #[test]
-    fn test_max_size_rejected_above_1gb() {
-        let result = ChunkingOptions::resolve(
-            Some(64),
-            Some(1024),
-            Some(1024 * 1024 * 1024 + 1), // 1GB + 1 byte
-        );
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, ChunkingError::InvalidOptions(_)));
-        let msg = err.to_string();
-        assert!(
-            msg.contains("1GB"),
-            "Error message should mention 1GB limit: {msg}"
-        );
+    fn test_sizes_outside_fastcdc_range_rejected() {
+        use fastcdc::v2020::{AVERAGE_MAX, MAXIMUM_MAX, MINIMUM_MAX};
+        // Values FastCDC cannot handle (it would panic in release and poison the
+        // per-upload NIF resource) must be rejected up front, naming the field.
+        let cases = [
+            (MINIMUM_MAX + 1, 1024, 4096, "min_size"),
+            (64, AVERAGE_MAX + 1, MAXIMUM_MAX, "avg_size"),
+            (64, 1024, MAXIMUM_MAX + 1, "max_size"),
+        ];
+        for (min, avg, max, field) in cases {
+            let result = ChunkingOptions::resolve(Some(min), Some(avg), Some(max));
+            assert!(
+                result.is_err(),
+                "must reject out-of-range {field}: ({min}, {avg}, {max})"
+            );
+            let err = result.unwrap_err();
+            assert!(matches!(err, ChunkingError::InvalidOptions(_)));
+            let msg = err.to_string();
+            assert!(msg.contains(field), "error should name {field}: {msg}");
+        }
     }
 
     #[test]
@@ -1282,12 +1416,15 @@ mod tests {
 
     #[test]
     fn test_valid_sizes_at_various_boundaries() {
-        // Test with exact boundary values that should be valid
+        use fastcdc::v2020::{
+            AVERAGE_MAX, AVERAGE_MIN, MAXIMUM_MAX, MAXIMUM_MIN, MINIMUM_MAX, MINIMUM_MIN,
+        };
+        // Exact boundary values that FastCDC v2020 accepts.
         let test_cases = [
-            (64, 64, 64),                                   // All at minimum
-            (64, 1024, 4096),                               // Typical small
-            (256 * 1024, 1024 * 1024, 4 * 1024 * 1024),     // Default values
-            (1024 * 1024, 1024 * 1024, 1024 * 1024 * 1024), // Max allowed
+            (MINIMUM_MIN, AVERAGE_MIN, MAXIMUM_MIN), // All at FastCDC minimum
+            (64, 1024, 4096),                        // Typical small
+            (256 * 1024, 1024 * 1024, 4 * 1024 * 1024), // Default values
+            (MINIMUM_MAX, AVERAGE_MAX, MAXIMUM_MAX), // All at FastCDC maximum
         ];
 
         for (min, avg, max) in test_cases {

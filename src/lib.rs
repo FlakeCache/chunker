@@ -36,7 +36,9 @@ pub mod compression;
 pub mod hashing;
 pub mod signing;
 
-pub use chunking::{ChunkDescriptor, ChunkMetadata, ChunkStream, ChunkingOptions, HashAlgorithm};
+pub use chunking::{
+    ChunkDescriptor, ChunkMetadata, ChunkStream, ChunkingOptions, HashAlgorithm, PushChunker,
+};
 
 #[cfg(feature = "nif")]
 pub mod nif;
