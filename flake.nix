@@ -41,8 +41,44 @@
           inherit targets;
         };
 
+        # The deployable single-node Nix binary-cache server (std-only; no NIF,
+        # no openssl -- pure Rust deps only).
+        nodeBin = pkgs.rustPlatform.buildRustPackage {
+          pname = "flakecache-node-bin";
+          version = "0.1.0";
+          src = ./.;
+          cargoLock.lockFile = ./Cargo.lock;
+          cargoBuildFlags = [ "-p" "flakecache-node-bin" ];
+          # Build only the node binary's closure; skip workspace tests (they need
+          # the dev shell / bind sockets).
+          doCheck = false;
+          buildAndTestSubdir = null;
+        };
+
+        # A minimal OCI image wrapping the node binary. Listens on 0.0.0.0:8501;
+        # data dir and signing key are provided at runtime (env / mounted secret).
+        nodeImage = pkgs.dockerTools.buildLayeredImage {
+          name = "flakecache-node";
+          tag = "dev";
+          contents = [ pkgs.cacert ];
+          config = {
+            Entrypoint = [ "${nodeBin}/bin/flakecache-node-bin" ];
+            Env = [
+              "FLAKECACHE_LISTEN=0.0.0.0:8501"
+              "FLAKECACHE_DATA_DIR=/data"
+            ];
+            ExposedPorts = { "8501/tcp" = { }; };
+            Volumes = { "/data" = { }; };
+          };
+        };
+
       in
       {
+        packages = {
+          flakecache-node-bin = nodeBin;
+          flakecache-node-image = nodeImage;
+        };
+
         devShells = {
           # 1. Linux Native (x86_64) & Musl (Static)
           linux = pkgs.mkShell {
