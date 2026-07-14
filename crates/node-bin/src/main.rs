@@ -11,6 +11,8 @@
 //! - signing key (optional): `FLAKECACHE_SIGNING_KEY` (a Nix `<name>:<base64>`
 //!   secret key) or `FLAKECACHE_SIGNING_KEY_FILE` (path to such a key file).
 //!   When set, served narinfos are signed so trusting Nix clients substitute.
+//! - token verification key (optional): `FLAKECACHE_TOKEN_PUBKEY`, a standard
+//!   base64-encoded 32-byte Ed25519 public key. When set, writes require auth.
 
 use std::env;
 use std::error::Error;
@@ -60,6 +62,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         let (name, key) = narinfo::parse_secret_key(&raw)?;
         println!("flakecache-node-bin: signing served narinfos as '{name}'");
         server = server.with_signing_key(name, key);
+    }
+    if let Ok(raw) = env::var("FLAKECACHE_TOKEN_PUBKEY") {
+        let bytes = flakecache_crypto::b64::decode(raw.trim())?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| "FLAKECACHE_TOKEN_PUBKEY must decode to 32 bytes")?;
+        let key = flakecache_crypto::VerifyingKey::from_bytes(&bytes)?;
+        println!("flakecache-node-bin: write-token authentication enabled");
+        server = server.with_auth_key(key);
     }
     let server = Arc::new(server);
 
