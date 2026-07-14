@@ -73,7 +73,24 @@ a k8s secret via ESO/OpenBao, RBAC-scoped.
 
 ## Status
 
-Built + verified: Ed25519 narinfo **signing** (server-side/`default` path) and
-**parse + verify** (zero-knowledge ingest), both known-answer-tested against real
-Nix. Pending: HTTP `.narinfo`/`nar` route wiring + per-cache key loading
-(signature layer), then the JWT/identity access mode.
+**The single-node signed cache works end-to-end with stock `nix`.** Proven on a
+real box: `nix copy --to http://<cache>` pushes a store path (xz or uncompressed);
+the cache serves a narinfo whose `Sig:` is **byte-identical to `nix store sign`'s
+canonical signature** and, field-for-field, **byte-identical to the narinfo nix's
+own `file://` cache serves**; a fresh consumer runs `nix copy --from http://<cache>`
+and substitutes the path back, byte-exact. Data persists across restarts (redb +
+on-disk CAS).
+
+Implemented: Ed25519 narinfo **signing** (server-side/`default` path, re-signs on
+`GET`), **parse + verify** (zero-knowledge ingest), HTTP `.narinfo`/`nar` route
+wiring, and `node-bin` key loading (`FLAKECACHE_SIGNING_KEY`/`_FILE`). All
+known-answer-tested against real Nix.
+
+**Nuance to remember:** the cache re-signs *unsigned* uploads on `GET`, so a client
+that pushes and then substitutes on the *same* machine can hit its own client-side
+narinfo cache (the unsigned copy it uploaded) and see "lacks a signature by a
+trusted key". Real deployments separate pushers from consumers, so this doesn't
+arise; zero-knowledge mode (pusher signs before upload) also avoids it entirely.
+
+Pending: cold-tier backend, per-cache config surface, and the JWT/identity access
+mode.
