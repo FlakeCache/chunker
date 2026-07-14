@@ -52,16 +52,19 @@ routing bytes through Elixir), or touches prod/shared systems, **stop and report
 `flakecache-fabric`, image `registry.infra.centralcloud.com/singularity/flakecache-node:dev`,
 signing key `flakecache-fabric-1`) and verified against the live pod for *both* modes
 singularity-engine uses: **sccache WebDAV** (SE's exact endpoint
-`/default/sccache/project/singularity-engine` — cold write + warm hit) and **Nix
-caching + pushing** (push a store path → substitute it back, signature trusted). The
+`/default/sccache/project/singularity-engine` — cold write + warm hit, verified with
+**both sccache 0.12** (SE's pinned version) **and 0.16** (latest, newer opendal)) and
+**Nix caching + pushing** (push a store path → substitute it back, signature trusted). The
 node speaks the standard Nix HTTP cache protocol + WebDAV; it re-signs narinfos on GET
 and stores everything chunked+deduped on a PVC.
 
 Deploy notes: direct `kubectl` (reversible test deploy, **not** GitOps-managed yet).
 Not touched: the live Elixir FlakeCache at `cache.flakecache.com/default`. Open decisions:
-(1) GitOps-manage the deploy (`/srv/infra` Flux) or fold into singularity-engine as a
-substrate plane; (2) prod cutover of `cache.flakecache.com/default` to this node, which
-needs the real `default:ESyvaQTi…` key + read/write auth.
+(1) GitOps-manage the deploy (`deployment/gitops/` Flux) or fold into singularity-engine
+per REPO.md — capability → **`fabrics/build/`** (`cache/nix/sccache/oci/chunking` — this
+*is* FlakeCache), product/branding → **`products/flakecache/`**; **not** substrate (no such
+root exists). (2) prod cutover of `cache.flakecache.com/default` to this node, which needs
+the real `default:ESyvaQTi…` key + read/write auth.
 
 **Done — on `main`, pushed (Forgejo + GitHub):**
 - `core/chunker` — FastCDC streaming chunker (+ push chunker; Codex-reviewed).
