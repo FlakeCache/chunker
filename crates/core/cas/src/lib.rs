@@ -85,7 +85,13 @@ impl ContentId {
     /// Lowercase hex encoding (64 characters).
     #[must_use]
     pub fn to_hex(&self) -> String {
-        hex::encode(self.0)
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(64);
+        for &byte in &self.0 {
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        out
     }
 }
 

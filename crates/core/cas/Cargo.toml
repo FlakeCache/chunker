@@ -13,7 +13,6 @@ categories = ["filesystem", "caching"]
 [dependencies]
 flakecache-crypto = { path = "../crypto", default-features = false }
 bytes = "1"
-hex = "0.4"
 thiserror = "2"
 
 [dev-dependencies]

@@ -559,7 +559,6 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "flakecache-crypto",
- "hex",
  "tempfile",
  "thiserror",
 ]
