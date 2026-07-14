@@ -1,0 +1,28 @@
+[package]
+name = "flakecache-proto-nix"
+version = "0.1.0"
+edition = "2024"
+description = "Nix binary-cache HTTP/1.1 protocol front-end for a FlakeCache node (std-only, edge-terminated TLS)"
+license = "MIT"
+repository = "https://github.com/FlakeCache/chunker"
+rust-version = "1.85"
+readme = "README.md"
+keywords = ["nix", "binary-cache", "http", "flakecache", "cache"]
+categories = ["caching", "network-programming"]
+
+# Only our own crates + std -- no tokio/hyper/axum, no external HTTP stack.
+[dependencies]
+flakecache-node = { path = "../../node" }
+flakecache-cas = { path = "../../core/cas" }
+
+[dev-dependencies]
+flakecache-meta = { path = "../../core/meta" }
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+multiple_crate_versions = "allow"

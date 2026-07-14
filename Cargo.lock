@@ -593,6 +593,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "flakecache-node-bin"
+version = "0.1.0"
+dependencies = [
+ "flakecache-cas",
+ "flakecache-meta",
+ "flakecache-node",
+ "flakecache-proto-nix",
+]
+
+[[package]]
+name = "flakecache-proto-nix"
+version = "0.1.0"
+dependencies = [
+ "flakecache-cas",
+ "flakecache-meta",
+ "flakecache-node",
+ "tempfile",
+]
+
+[[package]]
 name = "flakecache-swarm"
 version = "0.1.0"
 dependencies = [

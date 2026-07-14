@@ -1,0 +1,25 @@
+[package]
+name = "flakecache-node-bin"
+version = "0.1.0"
+edition = "2024"
+description = "Single-node FlakeCache Nix binary-cache server executable"
+license = "MIT"
+repository = "https://github.com/FlakeCache/chunker"
+rust-version = "1.85"
+readme = "README.md"
+keywords = ["nix", "binary-cache", "server", "flakecache", "cache"]
+categories = ["caching", "command-line-utilities"]
+
+[dependencies]
+flakecache-node = { path = "../node" }
+flakecache-cas = { path = "../core/cas" }
+flakecache-meta = { path = "../core/meta" }
+flakecache-proto-nix = { path = "../proto/nix" }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+multiple_crate_versions = "allow"
