@@ -597,6 +597,7 @@ name = "flakecache-node-bin"
 version = "0.1.0"
 dependencies = [
  "flakecache-cas",
+ "flakecache-crypto",
  "flakecache-meta",
  "flakecache-node",
  "flakecache-proto-nix",

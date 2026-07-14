@@ -13,6 +13,8 @@
 //! - `GET /<path>` -> resolve `<path>` to a manifest via [`Node::get_tag`] and
 //!   reassemble the bytes with [`Node::get`] (404 if unknown).
 //! - `HEAD /<path>` -> existence check, no body.
+//! - With an auth key configured, `PUT`, `DELETE`, and `MKCOL` require a valid
+//!   Ed25519 JWT carrying `scope: "write"`; read routes remain anonymous.
 //!
 //! The path -> manifest mapping lives in the node's durable metadata store, so a
 //! GET succeeds even after the process restarts.
@@ -21,9 +23,10 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use flakecache_cas::BlobBackend;
-use flakecache_crypto::SigningKey;
+use flakecache_crypto::{SigningKey, VerifyingKey, verify_message};
 use flakecache_node::Node;
 
 pub mod narinfo;
@@ -40,6 +43,7 @@ const MAX_BODY_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 struct Request {
     method: String,
     path: String,
+    authorization: Option<String>,
     body: Vec<u8>,
 }
 
@@ -57,6 +61,7 @@ pub struct NixCacheServer<B: BlobBackend> {
     /// with it on `GET` so Nix clients trusting the matching public key
     /// substitute. `None` serves stored narinfos verbatim.
     signing: Option<(String, SigningKey)>,
+    auth_key: Option<VerifyingKey>,
 }
 
 // Manual `Debug` so the Ed25519 secret key is never rendered.
@@ -67,6 +72,7 @@ impl<B: BlobBackend> std::fmt::Debug for NixCacheServer<B> {
             .field("priority", &self.priority)
             .field("want_mass_query", &self.want_mass_query)
             .field("signing_key", &self.signing.as_ref().map(|(name, _)| name))
+            .field("auth_key", &self.auth_key.as_ref().map(|_| "configured"))
             .finish_non_exhaustive()
     }
 }
@@ -82,6 +88,7 @@ impl<B: BlobBackend> NixCacheServer<B> {
             priority: 30,
             want_mass_query: true,
             signing: None,
+            auth_key: None,
         }
     }
 
@@ -108,6 +115,13 @@ impl<B: BlobBackend> NixCacheServer<B> {
     #[must_use]
     pub fn with_signing_key(mut self, key_name: impl Into<String>, secret_key: SigningKey) -> Self {
         self.signing = Some((key_name.into(), secret_key));
+        self
+    }
+
+    /// Require valid write-scoped capability tokens for mutating HTTP methods.
+    #[must_use]
+    pub fn with_auth_key(mut self, key: VerifyingKey) -> Self {
+        self.auth_key = Some(key);
         self
     }
 
@@ -178,6 +192,31 @@ impl<B: BlobBackend + Send + Sync + 'static> NixCacheServer<B> {
                 request.body.len()
             );
         }
+        if matches!(request.method.as_str(), "PUT" | "DELETE" | "MKCOL") {
+            match self.authorize_write(request.authorization.as_deref()) {
+                Ok(()) => {}
+                Err(AuthError::Unauthorized) => {
+                    return write_response(
+                        stream,
+                        401,
+                        "Unauthorized",
+                        "text/plain",
+                        b"unauthorized\n",
+                        true,
+                    );
+                }
+                Err(AuthError::Forbidden) => {
+                    return write_response(
+                        stream,
+                        403,
+                        "Forbidden",
+                        "text/plain",
+                        b"forbidden\n",
+                        true,
+                    );
+                }
+            }
+        }
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/nix-cache-info") => {
                 let body = self.cache_info();
@@ -215,6 +254,21 @@ impl<B: BlobBackend + Send + Sync + 'static> NixCacheServer<B> {
                     true,
                 )
             }
+        }
+    }
+
+    fn authorize_write(&self, authorization: Option<&str>) -> Result<(), AuthError> {
+        let Some(key) = self.auth_key.as_ref() else {
+            return Ok(());
+        };
+        let token = authorization
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .ok_or(AuthError::Unauthorized)?;
+        let claims = verify_token(token, key).ok_or(AuthError::Unauthorized)?;
+        if claims.scope == "write" {
+            Ok(())
+        } else {
+            Err(AuthError::Forbidden)
         }
     }
 
@@ -363,6 +417,127 @@ enum HttpError {
     Io(io::Error),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum AuthError {
+    Unauthorized,
+    Forbidden,
+}
+
+struct TokenClaims {
+    scope: String,
+}
+
+fn verify_token(token: &str, key: &VerifyingKey) -> Option<TokenClaims> {
+    let mut segments = token.split('.');
+    let header_segment = segments.next()?;
+    let payload_segment = segments.next()?;
+    let signature_segment = segments.next()?;
+    if segments.next().is_some() {
+        return None;
+    }
+
+    let header = String::from_utf8(decode_base64url(header_segment)?).ok()?;
+    let payload = String::from_utf8(decode_base64url(payload_segment)?).ok()?;
+    let signature: [u8; 64] = decode_base64url(signature_segment)?.try_into().ok()?;
+    let signed = format!("{header_segment}.{payload_segment}");
+    if !verify_message(signed.as_bytes(), &signature, key) {
+        return None;
+    }
+
+    let header = JsonObject::parse(&header)?;
+    if header.string("alg")? != "EdDSA" {
+        return None;
+    }
+    let payload = JsonObject::parse(&payload)?;
+    let _cache = payload.string("cache")?;
+    let scope = payload.string("scope")?.to_owned();
+    if scope != "read" && scope != "write" {
+        return None;
+    }
+    let exp = u64::try_from(payload.integer("exp")?).ok()?;
+    let _iat = payload.integer("iat")?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    (exp > now).then_some(TokenClaims { scope })
+}
+
+fn decode_base64url(input: &str) -> Option<Vec<u8>> {
+    if input.contains('=') {
+        return None;
+    }
+    let mut standard = input.replace('-', "+").replace('_', "/");
+    match standard.len() % 4 {
+        0 => {}
+        2 => standard.push_str("=="),
+        3 => standard.push('='),
+        _ => return None,
+    }
+    flakecache_crypto::b64::decode(&standard).ok()
+}
+
+struct JsonObject<'a> {
+    source: &'a str,
+}
+
+impl<'a> JsonObject<'a> {
+    fn parse(source: &'a str) -> Option<Self> {
+        let source = source.trim();
+        (source.starts_with('{') && source.ends_with('}')).then_some(Self { source })
+    }
+
+    fn string(&self, key: &str) -> Option<&'a str> {
+        let value = self.value(key)?.strip_prefix('"')?;
+        let end = value.find('"')?;
+        let string = &value[..end];
+        (!string.contains('\\')).then_some(string)
+    }
+
+    fn integer(&self, key: &str) -> Option<i64> {
+        let value = self.value(key)?;
+        let end = value
+            .find(|character: char| !character.is_ascii_digit() && character != '-')
+            .unwrap_or(value.len());
+        value[..end].parse().ok()
+    }
+
+    fn value(&self, key: &str) -> Option<&'a str> {
+        let needle = format!("\"{key}\"");
+        let mut rest = self.source.get(1..self.source.len() - 1)?;
+        loop {
+            rest = rest.trim_start();
+            if rest.starts_with(&needle) {
+                let after_key = rest.get(needle.len()..)?.trim_start();
+                return after_key.strip_prefix(':').map(str::trim_start);
+            }
+            let comma = find_json_comma(rest)?;
+            rest = rest.get(comma + 1..)?;
+        }
+    }
+}
+
+fn find_json_comma(source: &str) -> Option<usize> {
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut depth = 0_u32;
+    for (index, byte) in source.bytes().enumerate() {
+        if quoted && byte == b'\\' && !escaped {
+            escaped = true;
+            continue;
+        }
+        if byte == b'"' && !escaped {
+            quoted = !quoted;
+        } else if !quoted {
+            match byte {
+                b'{' | b'[' => depth += 1,
+                b'}' | b']' => depth = depth.saturating_sub(1),
+                b',' if depth == 0 => return Some(index),
+                _ => {}
+            }
+        }
+        escaped = false;
+    }
+    None
+}
+
 impl From<io::Error> for HttpError {
     fn from(err: io::Error) -> Self {
         Self::Io(err)
@@ -392,6 +567,7 @@ fn read_request(stream: &TcpStream) -> Result<Option<Request>, HttpError> {
 
     // Headers until a blank line; we only need Content-Length.
     let mut content_length: u64 = 0;
+    let mut authorization = None;
     loop {
         let mut header = String::new();
         let n = reader.read_line(&mut header)?;
@@ -410,6 +586,8 @@ fn read_request(stream: &TcpStream) -> Result<Option<Request>, HttpError> {
                     .trim()
                     .parse()
                     .map_err(|_| HttpError::BadRequest("invalid content-length\n".to_owned()))?;
+            } else if name.trim().eq_ignore_ascii_case("authorization") {
+                authorization = Some(value.trim().to_owned());
             }
         }
     }
@@ -422,7 +600,12 @@ fn read_request(stream: &TcpStream) -> Result<Option<Request>, HttpError> {
     let mut body = vec![0_u8; len];
     reader.read_exact(&mut body)?;
 
-    Ok(Some(Request { method, path, body }))
+    Ok(Some(Request {
+        method,
+        path,
+        authorization,
+        body,
+    }))
 }
 
 /// Write one HTTP/1.1 response and close (`Connection: close`).
@@ -469,9 +652,22 @@ mod tests {
         path: &str,
         body: &[u8],
     ) -> (u16, Vec<u8>) {
+        request_with_auth(addr, method, path, body, None)
+    }
+
+    fn request_with_auth(
+        addr: std::net::SocketAddr,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        token: Option<&str>,
+    ) -> (u16, Vec<u8>) {
         let mut stream = TcpStream::connect(addr).unwrap();
+        let authorization = token.map_or_else(String::new, |token| {
+            format!("Authorization: Bearer {token}\r\n")
+        });
         let head = format!(
-            "{method} {path} HTTP/1.1\r\nHost: test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "{method} {path} HTTP/1.1\r\nHost: test\r\nContent-Length: {}\r\n{authorization}Connection: close\r\n\r\n",
             body.len()
         );
         stream.write_all(head.as_bytes()).unwrap();
@@ -498,6 +694,95 @@ mod tests {
             .parse()
             .unwrap();
         (status, resp_body)
+    }
+
+    fn spawn_auth_server(key: VerifyingKey) -> (std::net::SocketAddr, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let cas = Cas::new(FilesystemBackend::new(dir.path().join("cas")));
+        let meta = MetaStore::open(dir.path().join("meta.redb")).unwrap();
+        let node = Node::new(cas, meta);
+        let server = Arc::new(NixCacheServer::new(node).with_auth_key(key));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _ = thread::spawn(move || server.serve(&listener));
+        (addr, dir)
+    }
+
+    fn base64url(input: &[u8]) -> String {
+        flakecache_crypto::b64::encode(input)
+            .replace('+', "-")
+            .replace('/', "_")
+            .trim_end_matches('=')
+            .to_owned()
+    }
+
+    fn token(key: &SigningKey, scope: &str, exp: u64) -> String {
+        let header = base64url(br#"{"alg":"EdDSA","typ":"JWT"}"#);
+        let payload = base64url(
+            format!(r#"{{"cache":"default","extra":{{"ignored":true}},"scope":"{scope}","exp":{exp},"iat":1}}"#).as_bytes(),
+        );
+        let signed = format!("{header}.{payload}");
+        let signature = flakecache_crypto::sign_message(signed.as_bytes(), key);
+        format!("{signed}.{}", base64url(&signature))
+    }
+
+    fn future_exp() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 60
+    }
+
+    #[test]
+    fn valid_write_token_allows_put() {
+        let key = flakecache_crypto::signing_key_from_seed(&[11; 32]);
+        let (addr, _dir) = spawn_auth_server(key.verifying_key());
+        let token = token(&key, "write", future_exp());
+        assert_eq!(
+            request_with_auth(addr, "PUT", "/authorized", b"data", Some(&token)).0,
+            200
+        );
+    }
+
+    #[test]
+    fn expired_write_token_is_unauthorized() {
+        let key = flakecache_crypto::signing_key_from_seed(&[12; 32]);
+        let (addr, _dir) = spawn_auth_server(key.verifying_key());
+        let token = token(&key, "write", 1);
+        assert_eq!(
+            request_with_auth(addr, "PUT", "/expired", b"data", Some(&token)).0,
+            401
+        );
+    }
+
+    #[test]
+    fn bad_signature_is_unauthorized() {
+        let trusted = flakecache_crypto::signing_key_from_seed(&[13; 32]);
+        let untrusted = flakecache_crypto::signing_key_from_seed(&[14; 32]);
+        let (addr, _dir) = spawn_auth_server(trusted.verifying_key());
+        let token = token(&untrusted, "write", future_exp());
+        assert_eq!(
+            request_with_auth(addr, "PUT", "/bad-signature", b"data", Some(&token)).0,
+            401
+        );
+    }
+
+    #[test]
+    fn read_scope_on_put_is_forbidden() {
+        let key = flakecache_crypto::signing_key_from_seed(&[15; 32]);
+        let (addr, _dir) = spawn_auth_server(key.verifying_key());
+        let token = token(&key, "read", future_exp());
+        assert_eq!(
+            request_with_auth(addr, "PUT", "/read-only", b"data", Some(&token)).0,
+            403
+        );
+    }
+
+    #[test]
+    fn no_auth_key_keeps_put_open() {
+        let (addr, _dir) = spawn_server();
+        assert_eq!(request(addr, "PUT", "/open", b"data").0, 200);
     }
 
     fn spawn_server() -> (std::net::SocketAddr, tempfile::TempDir) {

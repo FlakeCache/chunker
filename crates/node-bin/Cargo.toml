@@ -14,6 +14,7 @@ categories = ["caching", "command-line-utilities"]
 flakecache-node = { path = "../node" }
 flakecache-cas = { path = "../core/cas" }
 flakecache-meta = { path = "../core/meta" }
+flakecache-crypto = { path = "../core/crypto", default-features = false, features = ["ed25519"] }
 flakecache-proto-nix = { path = "../proto/nix" }
 
 [lints.rust]
