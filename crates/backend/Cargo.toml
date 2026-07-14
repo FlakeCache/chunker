@@ -13,6 +13,8 @@ categories = ["caching", "filesystem"]
 [dependencies]
 flakecache-cas = { path = "../core/cas" }
 bytes = "1"
+sha2 = "0.10"
+ureq = { version = "3.1", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 tempfile = "3"
