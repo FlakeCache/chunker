@@ -14,8 +14,14 @@
 
 use flakecache_cas::ContentId;
 
+mod config;
+mod policy;
 pub mod router;
 pub mod transport;
+pub use config::{FabricConfig, FabricConfigError};
+pub use policy::{
+    BackendKind, PlacementPlan, PlacementPolicy, PolicyError, ServiceObjective, StorageResource,
+};
 pub use router::{PeerClient, PeerError, Router, RouterError};
 pub use transport::{DEFAULT_TIMEOUT, HttpPeerClient};
 

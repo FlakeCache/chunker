@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flakecache.com/schemas/fabric-config-v1.schema.json",
+  "title": "FlakeCache fabric configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "resources", "service_classes"],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "resources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/resource"
+      }
+    },
+    "service_classes": {
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/service_objective"
+      }
+    }
+  },
+  "$defs": {
+    "non_empty_identifier": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": ".*\\S.*"
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "region", "zone", "backend"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/non_empty_identifier"
+        },
+        "region": {
+          "$ref": "#/$defs/non_empty_identifier"
+        },
+        "zone": {
+          "$ref": "#/$defs/non_empty_identifier"
+        },
+        "backend": {
+          "enum": ["filesystem", "object_store", "archive"]
+        }
+      }
+    },
+    "service_objective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replicas"],
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "min_regions": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "min_zones": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "require_archive": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    }
+  }
+}

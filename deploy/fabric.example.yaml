@@ -1,0 +1,37 @@
+# Schema: ../docs/specs/schemas/fabric-config-v1.schema.json
+# Example only. Production resource identities and objectives are deployment data.
+version: 1
+
+resources:
+  - id: node-eu-a
+    region: eu
+    zone: eu-a
+    backend: filesystem
+  - id: garage-eu
+    region: eu
+    zone: eu-b
+    backend: object_store
+  - id: garage-us
+    region: us
+    zone: us-a
+    backend: object_store
+  - id: independent-archive
+    region: archive
+    zone: archive-a
+    backend: archive
+
+service_classes:
+  self-hosted:
+    replicas: 1
+  regional:
+    replicas: 2
+    min_zones: 2
+  multi-region:
+    replicas: 3
+    min_regions: 2
+    min_zones: 3
+  immutable-release:
+    replicas: 3
+    min_regions: 2
+    min_zones: 2
+    require_archive: true

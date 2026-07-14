@@ -14,11 +14,14 @@ categories = ["algorithms", "caching"]
 flakecache-cas = { path = "../core/cas" }
 flakecache-crypto = { path = "../core/crypto", default-features = false }
 bytes = "1"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
 thiserror = "2"
 ureq = { version = "3.1", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 flakecache-backend = { path = "../backend" }
+tempfile = "3"
 
 [lints.rust]
 unsafe_code = "forbid"
