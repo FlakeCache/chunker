@@ -1,0 +1,27 @@
+[package]
+name = "flakecache-node"
+version = "0.1.0"
+edition = "2024"
+description = "FlakeCache data-plane node assembly: chunk -> content-address -> dedup -> DAG"
+license = "MIT"
+repository = "https://github.com/FlakeCache/chunker"
+rust-version = "1.85"
+readme = "README.md"
+keywords = ["content-addressed", "deduplication", "nix", "cache", "flakecache"]
+categories = ["caching", "filesystem"]
+
+# Only our own crates + std -- no external dependencies.
+[dependencies]
+chunker = { path = "../.." }
+flakecache-cas = { path = "../core/cas" }
+flakecache-meta = { path = "../core/meta" }
+
+[dev-dependencies]
+flakecache-backend = { path = "../backend" }
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

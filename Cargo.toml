@@ -24,7 +24,7 @@ include = [
 ]
 
 [workspace]
-members = [".", "crates/core/crypto", "crates/core/cas", "crates/core/meta", "crates/backend", "crates/swarm"]
+members = [".", "crates/core/crypto", "crates/core/cas", "crates/core/meta", "crates/backend", "crates/swarm", "crates/node"]
 resolver = "3"
 
 [profile.release]

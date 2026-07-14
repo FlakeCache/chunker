@@ -583,6 +583,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "flakecache-node"
+version = "0.1.0"
+dependencies = [
+ "chunker",
+ "flakecache-backend",
+ "flakecache-cas",
+ "flakecache-meta",
+ "tempfile",
+]
+
+[[package]]
 name = "flakecache-swarm"
 version = "0.1.0"
 dependencies = [
