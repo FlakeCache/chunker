@@ -67,10 +67,38 @@ its crash-safe, memory-mapped, disk-resident storage. Reachability and garbage
 collection will run graph algorithms over that DAG rather than loading a global
 index into memory.
 
-The existing scaffolded bespoke graph WAL is not the storage engine. It is
-non-atomic and unfinished. FlakeCache will use `redb` now and revisit a custom
-memory-mapped page store only if measured traversal performance becomes a
-bottleneck.
+VectorDrive's graph engine is mature in-memory (index-free adjacency,
+transactions, SPARQL), but its default persistence is a non-atomic full dump
+(`save_to_file` writes a postcard-encoded graph with `fs::write` -- no temp+rename,
+no WAL on that path), so a crash mid-write can corrupt the file, which is
+unacceptable for authoritative refcounts. A bespoke memory-mapped page store plus
+WAL already exists as a wired skeleton (~550 lines: `WalManager`, mmap page store,
+`write_page`, `commit`) behind the `standalone-engine` feature, but it is
+self-labeled scaffolding, off by default, and has no crash-recovery tests.
+FlakeCache therefore stores the DAG in `redb` now -- the same crash-safe substrate
+VectorDrive's own vector engine uses -- and graduates to the graph page store once
+that WAL is completed and crash-tested (weeks-scale hardening on the existing
+skeleton, not a greenfield rebuild), or if measured traversal performance demands
+it. Completing that WAL is a high-value task in its own right, since it lets the
+DAG run on our own engine and improves VectorDrive as a product.
+
+Graduating the DAG onto the graph page store expects all of the following to
+hold, and until they do `redb` remains the DAG store:
+
+- **Atomic commit.** A transaction is durable via WAL-append + `fsync` then
+  apply/checkpoint (or, for the whole-graph dump, temp file + `fsync` + atomic
+  `rename`) -- never a bare in-place `fs::write`.
+- **Crash recovery on open.** Reopening after a crash replays the WAL (or discards
+  a partial tail) to a consistent state; a half-applied commit is never observable.
+- **Crash-recovery tests.** Kill the process mid-commit, reopen, and assert the
+  graph and every refcount are intact and consistent -- the property redb already
+  guarantees and the current dump does not.
+- **Page management.** Correct page allocation/free and B-tree index maintenance
+  under insert/delete churn, without leaks or corruption.
+- **Documented durability + isolation.** Explicit `fsync` ordering and transaction
+  isolation guarantees, so callers know what survives power loss.
+- **Parity or better vs redb** on the DAG workload (refcount updates, manifest
+  reads, reachability scans) before any migration.
 
 Near-duplicate and similarity search is a phase-two concern. It will use an
 on-disk vector index based on DiskANN with RaBitQ quantization; it will not add a
