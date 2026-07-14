@@ -170,6 +170,14 @@ impl<B: BlobBackend + Send + Sync + 'static> NixCacheServer<B> {
 
     /// Dispatch a parsed request to the matching handler.
     fn route(&self, request: &Request, stream: &TcpStream) -> io::Result<()> {
+        if std::env::var_os("FLAKECACHE_ACCESS_LOG").is_some() {
+            eprintln!(
+                "nix-cache: {} {} (body {}B)",
+                request.method,
+                request.path,
+                request.body.len()
+            );
+        }
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/nix-cache-info") => {
                 let body = self.cache_info();
@@ -188,6 +196,14 @@ impl<B: BlobBackend + Send + Sync + 'static> NixCacheServer<B> {
             }
             ("HEAD", path) => self.handle_get(path, stream, false),
             ("PUT", path) => self.handle_put(path, &request.body, stream),
+            // Minimal WebDAV verbs so an sccache/opendal WebDAV client can use
+            // this as a compilation-cache backend. The store is flat and
+            // content-keyed, so collections are implicit: MKCOL is a no-op and
+            // PROPFIND reports any path as an existing collection.
+            ("OPTIONS", _) => write_dav_options(stream),
+            ("MKCOL", _) => write_response(stream, 201, "Created", "text/plain", b"", true),
+            ("PROPFIND", path) => Self::handle_propfind(path, stream),
+            ("DELETE", path) => self.handle_delete(path, stream),
             (method, _) => {
                 let msg = format!("method {method} not allowed\n");
                 write_response(
@@ -263,6 +279,62 @@ impl<B: BlobBackend + Send + Sync + 'static> NixCacheServer<B> {
         }
         write_response(stream, 200, "OK", "text/plain", b"", true)
     }
+
+    /// `PROPFIND <path>`: report the path as an existing `WebDAV` collection.
+    ///
+    /// The store is flat and content-keyed, so every path is treated as an
+    /// existing collection; this satisfies an `opendal` `WebDAV` client's
+    /// directory `stat` that gates cache-object writes.
+    fn handle_propfind(path: &str, stream: &TcpStream) -> io::Result<()> {
+        let name = path.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+        // Mirror the exact multistatus shape opendal's WebDAV client tests parse
+        // (displayname + getlastmodified + resourcetype), so its write-check stat
+        // succeeds instead of failing to deserialize.
+        let body = format!(
+            "<D:multistatus xmlns:D=\"DAV:\">\n\
+             <D:response>\n\
+             <D:href>{path}</D:href>\n\
+             <D:propstat>\n\
+             <D:prop>\n\
+             <D:displayname>{name}</D:displayname>\n\
+             <D:getlastmodified>Thu, 01 Jan 1970 00:00:00 GMT</D:getlastmodified>\n\
+             <D:resourcetype><D:collection/></D:resourcetype>\n\
+             </D:prop>\n\
+             <D:status>HTTP/1.1 200 OK</D:status>\n\
+             </D:propstat>\n\
+             </D:response>\n\
+             </D:multistatus>\n"
+        );
+        write_response(
+            stream,
+            207,
+            "Multi-Status",
+            "application/xml; charset=utf-8",
+            body.as_bytes(),
+            true,
+        )
+    }
+
+    /// `DELETE <path>`: drop the path->manifest mapping (best-effort; the blob is
+    /// reclaimed by `GC`, not here). Idempotent: always 204.
+    fn handle_delete(&self, path: &str, stream: &TcpStream) -> io::Result<()> {
+        if let Err(err) = self.node.meta().remove_root(path) {
+            return server_error(stream, &err, false);
+        }
+        write_response(stream, 204, "No Content", "text/plain", b"", false)
+    }
+}
+
+/// Respond to a `WebDAV` `OPTIONS` probe advertising the verbs this cache supports.
+fn write_dav_options(stream: &TcpStream) -> io::Result<()> {
+    let mut out = stream;
+    let head = "HTTP/1.1 200 OK\r\n\
+                Content-Length: 0\r\n\
+                DAV: 1,2\r\n\
+                Allow: OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, PROPFIND\r\n\
+                Connection: close\r\n\r\n";
+    out.write_all(head.as_bytes())?;
+    out.flush()
 }
 
 /// Write a 500 response for an internal node error (also logged to stderr).
@@ -535,5 +607,30 @@ mod tests {
             ni.verify_any(&sigs, &trusted),
             "served signature must verify: {text}"
         );
+    }
+
+    #[test]
+    fn webdav_verbs_support_an_sccache_backend() {
+        let (addr, _dir) = spawn_server();
+        // PROPFIND returns a 207 multistatus shaped like the one opendal's
+        // WebDAV client parses (else its write-check marks storage read-only).
+        let (code, body) = request(addr, "PROPFIND", "/default/sccache/p/", b"");
+        assert_eq!(code, 207);
+        let text = String::from_utf8(body).unwrap();
+        assert!(text.contains("<D:multistatus"), "got: {text}");
+        assert!(text.contains("<D:resourcetype><D:collection/></D:resourcetype>"));
+        assert!(text.contains("<D:status>HTTP/1.1 200 OK</D:status>"));
+        // MKCOL / OPTIONS succeed so directory setup doesn't fail the client.
+        assert_eq!(request(addr, "MKCOL", "/default/sccache/p/", b"").0, 201);
+        assert_eq!(request(addr, "OPTIONS", "/default/sccache/p/", b"").0, 200);
+        // Blob PUT/GET/DELETE round-trip (the actual cache objects).
+        assert_eq!(
+            request(addr, "PUT", "/default/sccache/p/k", b"artifact").0,
+            200
+        );
+        let (get_code, got) = request(addr, "GET", "/default/sccache/p/k", b"");
+        assert_eq!(get_code, 200);
+        assert_eq!(got, b"artifact");
+        assert_eq!(request(addr, "DELETE", "/default/sccache/p/k", b"").0, 204);
     }
 }
