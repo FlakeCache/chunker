@@ -132,7 +132,10 @@ mod tests {
 
     impl PeerClient for OnceServingPeers {
         fn fetch(&self, node: &NodeId, cid: ContentId) -> Result<Option<Bytes>, PeerError> {
-            let mut stores = self.stores.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut stores = self
+                .stores
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let bytes = match stores.get(node) {
                 Some(store) => store.get(cid).map_err(|e| Box::new(e) as PeerError)?,
                 None => None,
@@ -167,7 +170,9 @@ mod tests {
         let owner = p.owners(cid, 3)[0].clone();
 
         let owner_store = MemoryBackend::new();
-        owner_store.put(cid, b"remote").map_err(RouterError::Local)?;
+        owner_store
+            .put(cid, b"remote")
+            .map_err(RouterError::Local)?;
         let mut stores = HashMap::new();
         stores.insert(owner, owner_store);
         let peers = OnceServingPeers {
@@ -193,7 +198,13 @@ mod tests {
 
     #[test]
     fn miss_everywhere_is_none() -> Result<(), RouterError> {
-        let router = Router::new(NodeId::new("n1"), placement(), MemoryBackend::new(), empty_peers(), 3);
+        let router = Router::new(
+            NodeId::new("n1"),
+            placement(),
+            MemoryBackend::new(),
+            empty_peers(),
+            3,
+        );
         assert!(router.get(id(b"absent"))?.is_none());
         Ok(())
     }
@@ -212,7 +223,13 @@ mod tests {
         );
         assert!(router.is_owner(cid), "the primary owner reports ownership");
         // A non-member is never an owner.
-        let outsider = Router::new(NodeId::new("zzz"), placement(), MemoryBackend::new(), empty_peers(), 2);
+        let outsider = Router::new(
+            NodeId::new("zzz"),
+            placement(),
+            MemoryBackend::new(),
+            empty_peers(),
+            2,
+        );
         assert!(!outsider.is_owner(cid));
     }
 }

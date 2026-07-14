@@ -108,8 +108,11 @@ impl Placement {
     /// weight) are broken by node id so the result is fully deterministic.
     #[must_use]
     pub fn owners(&self, key: ContentId, replicas: usize) -> Vec<&NodeId> {
-        let mut weighted: Vec<(u64, &NodeId)> =
-            self.nodes.iter().map(|node| (weight(node, key), node)).collect();
+        let mut weighted: Vec<(u64, &NodeId)> = self
+            .nodes
+            .iter()
+            .map(|node| (weight(node, key), node))
+            .collect();
         weighted.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
         weighted
             .into_iter()
@@ -165,23 +168,23 @@ mod tests {
         let k = key(b"stable");
         let before = p.primary(k).unwrap().clone();
         // Remove some node that is NOT the primary owner of this key.
-        let victim = p
-            .nodes()
-            .iter()
-            .find(|n| **n != before)
-            .unwrap()
-            .clone();
+        let victim = p.nodes().iter().find(|n| **n != before).unwrap().clone();
         p.remove_node(&victim);
-        assert_eq!(p.primary(k), Some(&before), "unrelated removal must not remap");
+        assert_eq!(
+            p.primary(k),
+            Some(&before),
+            "unrelated removal must not remap"
+        );
     }
 
     #[test]
     fn adding_a_node_remaps_only_a_minority_of_keys() {
         let mut p = Placement::new(nodes(&["n1", "n2", "n3", "n4"]));
-        let keys: Vec<ContentId> = (0..1000_u32)
-            .map(|i| key(&i.to_le_bytes()))
+        let keys: Vec<ContentId> = (0..1000_u32).map(|i| key(&i.to_le_bytes())).collect();
+        let before: Vec<NodeId> = keys
+            .iter()
+            .map(|k| p.primary(*k).unwrap().clone())
             .collect();
-        let before: Vec<NodeId> = keys.iter().map(|k| p.primary(*k).unwrap().clone()).collect();
 
         p.add_node(NodeId::new("n5"));
         let moved = keys
