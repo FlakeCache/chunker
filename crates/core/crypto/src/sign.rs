@@ -6,7 +6,17 @@
 //! Callers are responsible for defining a canonical message and including an
 //! application-specific domain separator before signing it.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, Signer};
+pub use ed25519_dalek::{SigningKey, VerifyingKey};
+
+/// Reconstruct an Ed25519 signing key from its 32-byte seed.
+///
+/// Nix binary-cache secret keys store the 32-byte seed followed by the 32-byte
+/// public key; this takes the seed half.
+#[must_use]
+pub fn signing_key_from_seed(seed: &[u8; 32]) -> SigningKey {
+    SigningKey::from_bytes(seed)
+}
 
 /// Sign an already-canonicalized message with Ed25519.
 #[must_use]

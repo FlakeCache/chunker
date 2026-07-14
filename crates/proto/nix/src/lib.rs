@@ -25,6 +25,8 @@ use std::thread;
 use flakecache_cas::BlobBackend;
 use flakecache_node::Node;
 
+pub mod narinfo;
+
 /// Reject any request body larger than this (guards against a hostile or bogus
 /// `Content-Length` triggering an unbounded allocation). 32 GiB comfortably
 /// exceeds any realistic single NAR.

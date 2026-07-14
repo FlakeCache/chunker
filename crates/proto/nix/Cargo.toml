@@ -11,9 +11,12 @@ keywords = ["nix", "binary-cache", "http", "flakecache", "cache"]
 categories = ["caching", "network-programming"]
 
 # Only our own crates + std -- no tokio/hyper/axum, no external HTTP stack.
+# flakecache-crypto (already in the tree via node -> cas) provides Ed25519
+# narinfo signing and base64; no new external dependency enters the workspace.
 [dependencies]
 flakecache-node = { path = "../../node" }
 flakecache-cas = { path = "../../core/cas" }
+flakecache-crypto = { path = "../../core/crypto", default-features = false, features = ["ed25519"] }
 
 [dev-dependencies]
 flakecache-meta = { path = "../../core/meta" }

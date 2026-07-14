@@ -607,6 +607,7 @@ name = "flakecache-proto-nix"
 version = "0.1.0"
 dependencies = [
  "flakecache-cas",
+ "flakecache-crypto",
  "flakecache-meta",
  "flakecache-node",
  "tempfile",
