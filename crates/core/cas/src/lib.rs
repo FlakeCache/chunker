@@ -68,6 +68,14 @@ impl ContentId {
         Self(flakecache_crypto::shake256_256(&input))
     }
 
+    /// Reconstruct an identifier from its raw 32 bytes (e.g. one read back from
+    /// storage). No hashing is performed; callers that need the integrity
+    /// guarantee must verify via [`Cas::get`].
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     /// The raw 32-byte digest.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {

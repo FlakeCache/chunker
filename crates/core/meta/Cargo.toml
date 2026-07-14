@@ -1,0 +1,25 @@
+[package]
+name = "flakecache-meta"
+version = "0.1.0"
+edition = "2024"
+description = "Disk-resident chunk->manifest->refcount DAG with GC reachability for FlakeCache"
+license = "MIT"
+repository = "https://github.com/FlakeCache/chunker"
+rust-version = "1.85"
+readme = "README.md"
+keywords = ["content-addressed", "metadata", "garbage-collection", "cache", "flakecache"]
+categories = ["database-implementations", "caching"]
+
+[dependencies]
+flakecache-cas = { path = "../cas" }
+redb = "2"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
