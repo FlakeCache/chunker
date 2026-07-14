@@ -23,9 +23,12 @@ use std::sync::Arc;
 use std::thread;
 
 use flakecache_cas::BlobBackend;
+use flakecache_crypto::SigningKey;
 use flakecache_node::Node;
 
 pub mod narinfo;
+
+use narinfo::NarInfo;
 
 /// Reject any request body larger than this (guards against a hostile or bogus
 /// `Content-Length` triggering an unbounded allocation). 32 GiB comfortably
@@ -45,12 +48,27 @@ struct Request {
 /// Construct with [`NixCacheServer::new`], then hand it a bound [`TcpListener`]
 /// via [`NixCacheServer::serve`]. The server is shared across connection threads
 /// behind an [`Arc`], so `B` must be `Send + Sync`.
-#[derive(Debug)]
 pub struct NixCacheServer<B: BlobBackend> {
     node: Node<B>,
     store_dir: String,
     priority: u32,
     want_mass_query: bool,
+    /// The cache's `(key-name, secret-key)`; when set, narinfos are (re)signed
+    /// with it on `GET` so Nix clients trusting the matching public key
+    /// substitute. `None` serves stored narinfos verbatim.
+    signing: Option<(String, SigningKey)>,
+}
+
+// Manual `Debug` so the Ed25519 secret key is never rendered.
+impl<B: BlobBackend> std::fmt::Debug for NixCacheServer<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NixCacheServer")
+            .field("store_dir", &self.store_dir)
+            .field("priority", &self.priority)
+            .field("want_mass_query", &self.want_mass_query)
+            .field("signing_key", &self.signing.as_ref().map(|(name, _)| name))
+            .finish_non_exhaustive()
+    }
 }
 
 impl<B: BlobBackend> NixCacheServer<B> {
@@ -63,6 +81,7 @@ impl<B: BlobBackend> NixCacheServer<B> {
             store_dir: "/nix/store".to_owned(),
             priority: 30,
             want_mass_query: true,
+            signing: None,
         }
     }
 
@@ -77,6 +96,18 @@ impl<B: BlobBackend> NixCacheServer<B> {
     #[must_use]
     pub const fn with_priority(mut self, priority: u32) -> Self {
         self.priority = priority;
+        self
+    }
+
+    /// Sign served narinfos with this cache key (`key_name` + Ed25519 secret).
+    ///
+    /// With a key set, `GET /<hash>.narinfo` returns a narinfo bearing a `Sig:`
+    /// line under `key_name`, so a Nix client that trusts the matching public key
+    /// will substitute. Parse [`narinfo::parse_secret_key`] from a Nix
+    /// `<name>:<base64>` secret key.
+    #[must_use]
+    pub fn with_signing_key(mut self, key_name: impl Into<String>, secret_key: SigningKey) -> Self {
+        self.signing = Some((key_name.into(), secret_key));
         self
     }
 
@@ -172,6 +203,10 @@ impl<B: BlobBackend + Send + Sync + 'static> NixCacheServer<B> {
     }
 
     /// `GET`/`HEAD` `<path>`: resolve the tag to a manifest and reassemble.
+    ///
+    /// A `.narinfo` path is (re)signed with the cache key when one is configured,
+    /// so the client receives a signature it trusts; everything else (the NARs) is
+    /// returned verbatim.
     fn handle_get(&self, path: &str, stream: &TcpStream, with_body: bool) -> io::Result<()> {
         let manifest = match self.node.get_tag(path) {
             Ok(Some(id)) => id,
@@ -180,19 +215,41 @@ impl<B: BlobBackend + Send + Sync + 'static> NixCacheServer<B> {
             }
             Err(err) => return server_error(stream, &err, with_body),
         };
-        match self.node.get(manifest) {
-            Ok(Some(bytes)) => write_response(
-                stream,
-                200,
-                "OK",
-                "application/octet-stream",
-                &bytes,
-                with_body,
-            ),
+        let bytes = match self.node.get(manifest) {
+            Ok(Some(bytes)) => bytes,
             // Tagged but the manifest vanished: treat as absent.
-            Ok(None) => write_response(stream, 404, "Not Found", "text/plain", b"", with_body),
-            Err(err) => server_error(stream, &err, with_body),
+            Ok(None) => {
+                return write_response(stream, 404, "Not Found", "text/plain", b"", with_body);
+            }
+            Err(err) => return server_error(stream, &err, with_body),
+        };
+
+        if path.ends_with(".narinfo") {
+            let signed = self.signed_narinfo(&bytes);
+            let body = signed.as_deref().unwrap_or(&bytes);
+            return write_response(stream, 200, "OK", "text/x-nix-narinfo", body, with_body);
         }
+        write_response(
+            stream,
+            200,
+            "OK",
+            "application/octet-stream",
+            &bytes,
+            with_body,
+        )
+    }
+
+    /// Re-sign a stored narinfo with the cache key.
+    ///
+    /// Returns `None` (serve the stored bytes verbatim) when no key is configured
+    /// or the stored bytes are not a parseable narinfo — e.g. an already-signed
+    /// zero-knowledge upload we must not rewrite.
+    fn signed_narinfo(&self, stored: &[u8]) -> Option<Vec<u8>> {
+        let (name, key) = self.signing.as_ref()?;
+        let text = std::str::from_utf8(stored).ok()?;
+        let (narinfo, _existing_sigs) = NarInfo::parse(text, &self.store_dir).ok()?;
+        let sig = narinfo.signature(name, key);
+        Some(narinfo.to_text(&[sig]).into_bytes())
     }
 
     /// `PUT <path>`: ingest the body and anchor it under `<path>`.
@@ -429,5 +486,54 @@ mod tests {
         let (hit, body) = request(addr, "HEAD", "/x.narinfo", b"");
         assert_eq!(hit, 200, "HEAD of a present path is 200");
         assert!(body.is_empty(), "HEAD returns no body");
+    }
+
+    fn spawn_signed_server() -> (
+        std::net::SocketAddr,
+        flakecache_crypto::VerifyingKey,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let cas = Cas::new(FilesystemBackend::new(dir.path().join("cas")));
+        let meta = MetaStore::open(dir.path().join("meta.redb")).unwrap();
+        let node = Node::new(cas, meta);
+        let key = flakecache_crypto::signing_key_from_seed(&[7u8; 32]);
+        let pubkey = key.verifying_key();
+        let server = Arc::new(NixCacheServer::new(node).with_signing_key("testcache-1", key));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _ = thread::spawn(move || server.serve(&listener));
+        (addr, pubkey, dir)
+    }
+
+    #[test]
+    fn served_narinfo_is_signed_and_verifies() {
+        let (addr, pubkey, _dir) = spawn_signed_server();
+        // A complete but unsigned narinfo, as a stock `nix copy` would upload.
+        let uploaded = "StorePath: /nix/store/00000000000000000000000000000000-x\n\
+             URL: nar/abc.nar\n\
+             Compression: none\n\
+             NarHash: sha256:0984x2ah27wvdh510a7jyqgz2760z20gl44xxrcli8bfnv39ny9c\n\
+             NarSize: 5\n\
+             References: \n";
+        let path = "/00000000000000000000000000000000.narinfo";
+        let (put, _) = request(addr, "PUT", path, uploaded.as_bytes());
+        assert_eq!(put, 200);
+
+        let (get, body) = request(addr, "GET", path, b"");
+        assert_eq!(get, 200);
+        let text = String::from_utf8(body).unwrap();
+        assert!(
+            text.contains("Sig: testcache-1:"),
+            "served narinfo unsigned: {text}"
+        );
+
+        // The served signature verifies against the cache's public key.
+        let (ni, sigs) = narinfo::NarInfo::parse(&text, "/nix/store").unwrap();
+        let trusted = std::collections::BTreeMap::from([("testcache-1".to_string(), pubkey)]);
+        assert!(
+            ni.verify_any(&sigs, &trusted),
+            "served signature must verify: {text}"
+        );
     }
 }

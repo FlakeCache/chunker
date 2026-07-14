@@ -8,6 +8,9 @@
 //! defaults):
 //! - listen address: arg 1, else `FLAKECACHE_LISTEN`, else `127.0.0.1:8501`.
 //! - data directory: arg 2, else `FLAKECACHE_DATA_DIR`, else `./flakecache-data`.
+//! - signing key (optional): `FLAKECACHE_SIGNING_KEY` (a Nix `<name>:<base64>`
+//!   secret key) or `FLAKECACHE_SIGNING_KEY_FILE` (path to such a key file).
+//!   When set, served narinfos are signed so trusting Nix clients substitute.
 
 use std::env;
 use std::error::Error;
@@ -19,7 +22,7 @@ use std::sync::Arc;
 use flakecache_cas::{Cas, FilesystemBackend};
 use flakecache_meta::MetaStore;
 use flakecache_node::Node;
-use flakecache_proto_nix::NixCacheServer;
+use flakecache_proto_nix::{NixCacheServer, narinfo};
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:8501";
 const DEFAULT_DATA_DIR: &str = "./flakecache-data";
@@ -41,7 +44,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     let cas = Cas::new(FilesystemBackend::new(data_dir.join("cas")));
     let meta = MetaStore::open(data_dir.join("meta.redb"))?;
     let node = Node::new(cas, meta);
-    let server = Arc::new(NixCacheServer::new(node));
+    let mut server = NixCacheServer::new(node);
+
+    // Optional cache signing key.
+    let signing = env::var("FLAKECACHE_SIGNING_KEY").ok().map_or_else(
+        || {
+            env::var("FLAKECACHE_SIGNING_KEY_FILE")
+                .ok()
+                .map(fs::read_to_string)
+                .transpose()
+        },
+        |k| Ok(Some(k)),
+    )?;
+    if let Some(raw) = signing {
+        let (name, key) = narinfo::parse_secret_key(&raw)?;
+        println!("flakecache-node-bin: signing served narinfos as '{name}'");
+        server = server.with_signing_key(name, key);
+    }
+    let server = Arc::new(server);
 
     let listener = TcpListener::bind(&listen)?;
     let addr = listener.local_addr()?;
