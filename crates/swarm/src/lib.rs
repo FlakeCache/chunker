@@ -14,6 +14,9 @@
 
 use flakecache_cas::ContentId;
 
+pub mod router;
+pub use router::{PeerClient, PeerError, Router, RouterError};
+
 /// A node identity in the swarm (e.g. a hostname or stable node id).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(String);

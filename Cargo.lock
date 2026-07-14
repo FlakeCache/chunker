@@ -586,8 +586,11 @@ dependencies = [
 name = "flakecache-swarm"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "flakecache-backend",
  "flakecache-cas",
  "flakecache-crypto",
+ "thiserror",
 ]
 
 [[package]]

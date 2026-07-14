@@ -13,6 +13,11 @@ categories = ["algorithms", "caching"]
 [dependencies]
 flakecache-cas = { path = "../core/cas" }
 flakecache-crypto = { path = "../core/crypto", default-features = false }
+bytes = "1"
+thiserror = "2"
+
+[dev-dependencies]
+flakecache-backend = { path = "../backend" }
 
 [lints.rust]
 unsafe_code = "forbid"
