@@ -16,7 +16,8 @@ std = []
 ed25519 = ["dep:ed25519-dalek"]
 
 [dependencies]
-shake = { version = "0.1", default-features = false }
+# RustCrypto SHAKE-256 (audited, ubiquitous) rather than an obscure single-purpose crate.
+sha3 = { version = "0.10", default-features = false }
 ed25519-dalek = { version = "3", default-features = false, features = ["alloc", "fast", "zeroize"], optional = true }
 
 [lints.rust]

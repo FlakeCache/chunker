@@ -4,7 +4,8 @@
 //! SHAKE-256 hashing for content identifiers and witness binding.
 
 use alloc::{vec, vec::Vec};
-use shake::{ExtendableOutput, Shake256, Update, XofReader};
+use sha3::Shake256;
+use sha3::digest::{ExtendableOutput, Update, XofReader};
 
 /// Compute a SHAKE-256 digest with an arbitrary output length.
 #[must_use]
