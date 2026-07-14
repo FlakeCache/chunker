@@ -1,0 +1,84 @@
+# Build Fabric — content-addressable cache node (CAS). See chunker ADR-0003/0004.
+# Consumers target the stable alias `cache-gateway`; `cache-node` is the impl.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cache-data
+  namespace: build-fabric
+  labels: { app.kubernetes.io/part-of: build-fabric, app.kubernetes.io/component: cache-node }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cache-node
+  namespace: build-fabric
+  labels: { app.kubernetes.io/part-of: build-fabric, app.kubernetes.io/component: cache-node }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: cache-node }
+  template:
+    metadata:
+      labels: { app: cache-node, app.kubernetes.io/part-of: build-fabric, app.kubernetes.io/component: cache-node }
+    spec:
+      imagePullSecrets:
+        - name: centralcloud-registry-pull
+      containers:
+        - name: cache
+          image: registry.infra.centralcloud.com/singularity/flakecache-node:cold-auth
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { containerPort: 8501, protocol: TCP }
+          env:
+            - { name: FLAKECACHE_LISTEN, value: "0.0.0.0:8501" }
+            - { name: FLAKECACHE_DATA_DIR, value: /data }
+            - { name: FLAKECACHE_SIGNING_KEY_FILE, value: /keys/sk }
+            - { name: FLAKECACHE_S3_BUCKET,            valueFrom: { secretKeyRef: { name: cache-cold-s3, key: FLAKECACHE_S3_BUCKET } } }
+            - { name: FLAKECACHE_S3_ENDPOINT,          valueFrom: { secretKeyRef: { name: cache-cold-s3, key: FLAKECACHE_S3_ENDPOINT } } }
+            - { name: FLAKECACHE_S3_PREFIX,            valueFrom: { secretKeyRef: { name: cache-cold-s3, key: FLAKECACHE_S3_PREFIX } } }
+            - { name: FLAKECACHE_S3_REGION,            valueFrom: { secretKeyRef: { name: cache-cold-s3, key: FLAKECACHE_S3_REGION } } }
+            - { name: FLAKECACHE_S3_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: cache-cold-s3, key: FLAKECACHE_S3_SECRET_ACCESS_KEY } } }
+            - { name: FLAKECACHE_S3_ACCESS_KEY_ID,     valueFrom: { secretKeyRef: { name: cache-cold-s3, key: FLAKECACHE_S3_ACCESS_KEY_ID } } }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: signing, mountPath: /keys, readOnly: true }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: cache-data }
+        - name: signing
+          secret: { secretName: cache-signing-key, defaultMode: 420 }
+---
+# Impl service (direct)
+apiVersion: v1
+kind: Service
+metadata:
+  name: cache-node
+  namespace: build-fabric
+  labels: { app.kubernetes.io/part-of: build-fabric, app.kubernetes.io/component: cache-node }
+spec:
+  type: ClusterIP
+  selector: { app: cache-node }
+  ports:
+    - { name: http, port: 8501, targetPort: 8501, protocol: TCP }
+---
+# Stable consumer-facing alias (server CAS_ENDPOINT + CI target this)
+apiVersion: v1
+kind: Service
+metadata:
+  name: cache-gateway
+  namespace: build-fabric
+  labels: { app.kubernetes.io/part-of: build-fabric, app.kubernetes.io/component: cas-gateway }
+  annotations:
+    flakecache.dev/purpose: "Stable CAS endpoint alias; see chunker ADR-0004. Backed by cache-node today, the build-fabric storage gateway later."
+spec:
+  type: ClusterIP
+  selector: { app: cache-node }
+  ports:
+    - { name: http, port: 80, targetPort: 8501, protocol: TCP }
