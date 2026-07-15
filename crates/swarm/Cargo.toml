@@ -15,6 +15,7 @@ flakecache-cas = { path = "../core/cas" }
 flakecache-crypto = { path = "../core/crypto", default-features = false }
 bytes = "1"
 thiserror = "2"
+ureq = { version = "3.1", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 flakecache-backend = { path = "../backend" }

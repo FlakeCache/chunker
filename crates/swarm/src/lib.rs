@@ -15,7 +15,9 @@
 use flakecache_cas::ContentId;
 
 pub mod router;
+pub mod transport;
 pub use router::{PeerClient, PeerError, Router, RouterError};
+pub use transport::{DEFAULT_TIMEOUT, HttpPeerClient};
 
 /// A node identity in the swarm (e.g. a hostname or stable node id).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

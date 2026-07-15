@@ -8,21 +8,31 @@
 //! The transport is abstracted behind [`PeerClient`]; a real HTTP/QUIC client is
 //! a follow-up, and tests use an in-memory stand-in.
 
+use std::io;
+
 use bytes::Bytes;
 use flakecache_cas::{BlobBackend, CasError, ContentId};
 
 use crate::{NodeId, Placement};
 
-/// A transport-agnostic error from a peer fetch.
+/// A transport-agnostic error from a peer operation.
 pub type PeerError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
-/// Fetch a blob from a specific peer node.
+/// Transfer blobs to and from a specific peer node.
 pub trait PeerClient {
     /// Fetch `id` from `node`, or `None` if that peer does not have it.
     ///
     /// # Errors
     /// Returns a [`PeerError`] if the peer transport fails.
     fn fetch(&self, node: &NodeId, id: ContentId) -> Result<Option<Bytes>, PeerError>;
+
+    /// Replicate `bytes` (a blob with id `id`) onto `node`. Idempotent, since
+    /// content is immutable and content-addressed.
+    ///
+    /// # Errors
+    /// Returns a [`PeerError`] if the peer transport fails. Callers replicating
+    /// on write treat this as best-effort and do not fail the local write.
+    fn push(&self, node: &NodeId, id: ContentId, bytes: &[u8]) -> Result<(), PeerError>;
 }
 
 /// Errors from the router.
@@ -90,6 +100,12 @@ impl<Local: BlobBackend, Peers: PeerClient> Router<Local, Peers> {
     /// # Errors
     /// Returns [`RouterError`] if the local read or a peer fetch fails.
     pub fn get(&self, id: ContentId) -> Result<Option<Bytes>, RouterError> {
+        self.read_local_first(id)
+    }
+
+    /// The local-first-then-owner-peer read shared by the inherent [`Self::get`]
+    /// and the [`BlobBackend`] implementation.
+    fn read_local_first(&self, id: ContentId) -> Result<Option<Bytes>, RouterError> {
         if let Some(bytes) = self.local.get(id).map_err(RouterError::Local)? {
             return Ok(Some(bytes));
         }
@@ -105,6 +121,70 @@ impl<Local: BlobBackend, Peers: PeerClient> Router<Local, Peers> {
             }
         }
         Ok(None)
+    }
+}
+
+impl<Local: BlobBackend + Sync, Peers: PeerClient + Sync> Router<Local, Peers> {
+    /// The co-owner peers of `id`: its owners minus this node. This node keeps
+    /// its own copy locally, so replication targets only the *other* owners
+    /// (whether or not this node is itself an owner of `id`).
+    fn replica_peers(&self, id: ContentId) -> Vec<&NodeId> {
+        self.placement
+            .owners(id, self.replicas)
+            .into_iter()
+            .filter(|owner| **owner != self.me)
+            .collect()
+    }
+
+    /// Push `bytes` to every co-owner peer of `id` in parallel, best-effort.
+    ///
+    /// Each push runs on its own scoped thread with the peer client's per-request
+    /// timeout, so a slow or dead peer bounds only its own thread and never the
+    /// sum of all peers. A push failure is logged and dropped: the local write
+    /// has already succeeded, and anti-entropy (a later increment) reconciles a
+    /// replica that a transient failure left behind.
+    fn replicate(&self, id: ContentId, bytes: &[u8]) {
+        let peers = self.replica_peers(id);
+        if peers.is_empty() {
+            return;
+        }
+        std::thread::scope(|scope| {
+            for peer in peers {
+                scope.spawn(move || {
+                    if let Err(error) = self.peers.push(peer, id, bytes) {
+                        eprintln!(
+                            "flakecache-swarm: replicate {} to {} failed: {error}",
+                            id.to_hex(),
+                            peer.as_str(),
+                        );
+                    }
+                });
+            }
+        });
+    }
+}
+
+/// [`Router`] is a drop-in [`BlobBackend`]: `put` writes locally and then
+/// replicates to co-owner peers on the write path, `get` reads local-first then
+/// from owner peers. This lets a node's server front-end store and serve chunks
+/// through the router without knowing the swarm exists.
+impl<Local: BlobBackend + Sync, Peers: PeerClient + Sync> BlobBackend for Router<Local, Peers> {
+    fn put(&self, id: ContentId, bytes: &[u8]) -> Result<(), CasError> {
+        // Durable locally first; only then fan out replicas. A replica push that
+        // fails must not fail the write, so replication is best-effort.
+        self.local.put(id, bytes)?;
+        self.replicate(id, bytes);
+        Ok(())
+    }
+
+    fn get(&self, id: ContentId) -> Result<Option<Bytes>, CasError> {
+        // Reuse the local-first-then-peer read path, mapping the router error
+        // onto the backend's error: a local failure is preserved verbatim, a
+        // peer transport failure surfaces as I/O.
+        self.read_local_first(id).map_err(|error| match error {
+            RouterError::Local(cas) => cas,
+            RouterError::Peer(peer) => CasError::Io(io::Error::other(peer)),
+        })
     }
 }
 
@@ -144,6 +224,18 @@ mod tests {
                 stores.remove(node);
             }
             Ok(bytes)
+        }
+
+        fn push(&self, node: &NodeId, cid: ContentId, bytes: &[u8]) -> Result<(), PeerError> {
+            let mut stores = self
+                .stores
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            stores
+                .entry(node.clone())
+                .or_default()
+                .put(cid, bytes)
+                .map_err(|e| Box::new(e) as PeerError)
         }
     }
 
@@ -231,5 +323,129 @@ mod tests {
             2,
         );
         assert!(!outsider.is_owner(cid));
+    }
+
+    /// A peer client that records every `push` it receives, so a test can assert
+    /// exactly which co-owners a write replicated to. `fetch` is unused here.
+    #[derive(Default)]
+    struct RecordingPeers {
+        pushes: Mutex<Vec<(NodeId, ContentId, Vec<u8>)>>,
+    }
+
+    impl RecordingPeers {
+        fn targets(&self) -> Vec<NodeId> {
+            let mut nodes: Vec<NodeId> = self
+                .pushes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .map(|(node, _, _)| node.clone())
+                .collect();
+            nodes.sort();
+            nodes
+        }
+    }
+
+    impl PeerClient for RecordingPeers {
+        fn fetch(&self, _node: &NodeId, _cid: ContentId) -> Result<Option<Bytes>, PeerError> {
+            Ok(None)
+        }
+
+        fn push(&self, node: &NodeId, cid: ContentId, bytes: &[u8]) -> Result<(), PeerError> {
+            self.pushes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((node.clone(), cid, bytes.to_vec()));
+            Ok(())
+        }
+    }
+
+    // `Router::put` (via BlobBackend) writes locally, then replicates to every
+    // co-owner peer in parallel — the owners of the key minus this node.
+    #[test]
+    fn put_writes_local_and_replicates_to_co_owners() -> Result<(), CasError> {
+        let cid = id(b"replicated");
+        let p = placement();
+        let owners: Vec<NodeId> = p.owners(cid, 3).into_iter().cloned().collect();
+        // Run as the primary owner: replicas are the other two owners, not self.
+        let me = owners[0].clone();
+        let expected: Vec<NodeId> = {
+            let mut rest = owners[1..].to_vec();
+            rest.sort();
+            rest
+        };
+
+        let local = MemoryBackend::new();
+        let peers = RecordingPeers::default();
+        let router = Router::new(me, p, local, peers, 3);
+
+        BlobBackend::put(&router, cid, b"replicated")?;
+
+        // The write is durable locally, and served through the router's get.
+        assert_eq!(
+            BlobBackend::get(&router, cid)?.as_deref(),
+            Some(&b"replicated"[..]),
+        );
+        assert_eq!(
+            router.peers.targets(),
+            expected,
+            "replicated to exactly the co-owners, never to self",
+        );
+        assert!(
+            !router.peers.targets().contains(&router.me),
+            "never replicate to self",
+        );
+        Ok(())
+    }
+
+    // A non-owner node that ingests a chunk keeps a local copy and pushes to all
+    // owners (the full owner set, since none of them is self).
+    #[test]
+    fn non_owner_put_replicates_to_all_owners() -> Result<(), CasError> {
+        let cid = id(b"chunk");
+        let p = placement();
+        let mut expected: Vec<NodeId> = p.owners(cid, 2).into_iter().cloned().collect();
+        expected.sort();
+
+        // "zzz" is not a member, so it is never an owner of `cid`.
+        let router = Router::new(
+            NodeId::new("zzz"),
+            p,
+            MemoryBackend::new(),
+            RecordingPeers::default(),
+            2,
+        );
+        BlobBackend::put(&router, cid, b"chunk")?;
+        assert_eq!(router.peers.targets(), expected);
+        Ok(())
+    }
+
+    /// A peer client whose `push` always fails, to prove a replica failure is
+    /// logged but never fails the local write.
+    struct FailingPeers;
+
+    impl PeerClient for FailingPeers {
+        fn fetch(&self, _node: &NodeId, _cid: ContentId) -> Result<Option<Bytes>, PeerError> {
+            Ok(None)
+        }
+
+        fn push(&self, _node: &NodeId, _cid: ContentId, _bytes: &[u8]) -> Result<(), PeerError> {
+            Err(Box::<dyn std::error::Error + Send + Sync>::from("peer down"))
+        }
+    }
+
+    #[test]
+    fn replica_failure_does_not_fail_the_write() -> Result<(), CasError> {
+        let cid = id(b"durable");
+        let local = MemoryBackend::new();
+        let router = Router::new(NodeId::new("n1"), placement(), local, FailingPeers, 3);
+
+        // Every replica push errors, yet the local write succeeds and is served.
+        BlobBackend::put(&router, cid, b"durable")?;
+        assert_eq!(
+            BlobBackend::get(&router, cid)?.as_deref(),
+            Some(&b"durable"[..]),
+        );
+        Ok(())
     }
 }

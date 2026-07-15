@@ -16,6 +16,12 @@
 //!   When set, served narinfos are signed so trusting Nix clients substitute.
 //! - token verification key (optional): `FLAKECACHE_TOKEN_PUBKEY`, a standard
 //!   base64-encoded 32-byte Ed25519 public key. When set, writes require auth.
+//! - swarm replication (optional): set `FLAKECACHE_SWARM_SELF` to this node's
+//!   peer base URL (e.g. `http://cache-1:8501`) to wrap the CAS in a swarm
+//!   [`Router`], replicating each written chunk to its co-owner peers listed in
+//!   `FLAKECACHE_SWARM_PEERS` (comma-separated base URLs) with a replica count
+//!   from `FLAKECACHE_SWARM_REPLICAS` (default 3). Absent `FLAKECACHE_SWARM_SELF`,
+//!   the node behaves exactly as a single-node cache.
 
 use std::env;
 use std::error::Error;
@@ -29,6 +35,7 @@ use flakecache_cas::{BlobBackend, Cas, FilesystemBackend};
 use flakecache_meta::MetaStore;
 use flakecache_node::Node;
 use flakecache_proto_nix::{NixCacheServer, narinfo};
+use flakecache_swarm::{DEFAULT_TIMEOUT, HttpPeerClient, NodeId, Placement, Router};
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:8501";
 const DEFAULT_DATA_DIR: &str = "./flakecache-data";
@@ -67,16 +74,100 @@ fn main() -> Result<(), Box<dyn Error>> {
     let warm = FilesystemBackend::new(data_dir.join("cas"));
     if env::var_os("FLAKECACHE_S3_ENDPOINT").is_some() {
         println!("flakecache-node-bin: S3 cold tier enabled");
-        serve(
+        run(
             TieredBackend::new(warm, S3Backend::from_env()?),
             &data_dir,
             signing,
             &listener,
         )?;
     } else {
-        serve(warm, &data_dir, signing, &listener)?;
+        run(warm, &data_dir, signing, &listener)?;
     }
     Ok(())
+}
+
+/// Serve `backend` directly, or — when swarm replication is configured — wrap it
+/// in a [`Router`] first so writes replicate to co-owner peers. When
+/// `FLAKECACHE_SWARM_SELF` is unset the router is never constructed and the
+/// backend is served exactly as before.
+fn run<B: BlobBackend + Send + Sync + 'static>(
+    backend: B,
+    data_dir: &std::path::Path,
+    signing: Option<String>,
+    listener: &TcpListener,
+) -> Result<(), Box<dyn Error>> {
+    match swarm_config()? {
+        Some(config) => {
+            println!(
+                "flakecache-node-bin: swarm replication enabled as '{}' ({} members, {} replicas)",
+                config.me.as_str(),
+                config.placement.len(),
+                config.replicas,
+            );
+            let router = Router::new(
+                config.me,
+                config.placement,
+                backend,
+                HttpPeerClient::new(DEFAULT_TIMEOUT),
+                config.replicas,
+            );
+            serve(router, data_dir, signing, listener)
+        }
+        None => serve(backend, data_dir, signing, listener),
+    }
+}
+
+/// Resolved swarm membership for this node.
+struct SwarmConfig {
+    me: NodeId,
+    placement: Placement,
+    replicas: usize,
+}
+
+/// Default replica count when `FLAKECACHE_SWARM_REPLICAS` is unset.
+const DEFAULT_REPLICAS: usize = 3;
+
+/// Build a [`SwarmConfig`] from the environment, or `None` when swarm mode is
+/// off (`FLAKECACHE_SWARM_SELF` unset or empty).
+///
+/// This node's id and every peer id are peer **base URLs** (see
+/// [`flakecache_swarm::HttpPeerClient`]); a trailing slash is trimmed so this
+/// node's `SELF` form matches the way peers list it. The placement is the peer
+/// set plus this node.
+fn swarm_config() -> Result<Option<SwarmConfig>, Box<dyn Error>> {
+    let Some(me) = env::var("FLAKECACHE_SWARM_SELF")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_owned())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let me = NodeId::new(me);
+
+    let mut members: Vec<NodeId> = env::var("FLAKECACHE_SWARM_PEERS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|peer| peer.trim().trim_end_matches('/'))
+        .filter(|peer| !peer.is_empty())
+        .map(NodeId::new)
+        .collect();
+    members.push(me.clone());
+    let placement = Placement::new(members);
+
+    let replicas = match env::var("FLAKECACHE_SWARM_REPLICAS") {
+        Ok(raw) => raw
+            .trim()
+            .parse::<usize>()
+            .map_err(|e| format!("FLAKECACHE_SWARM_REPLICAS must be a positive integer: {e}"))?
+            .max(1),
+        Err(_) => DEFAULT_REPLICAS,
+    };
+
+    Ok(Some(SwarmConfig {
+        me,
+        placement,
+        replicas,
+    }))
 }
 
 fn serve<B: BlobBackend + Send + Sync + 'static>(

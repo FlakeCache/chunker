@@ -604,6 +604,7 @@ dependencies = [
  "flakecache-meta",
  "flakecache-node",
  "flakecache-proto-nix",
+ "flakecache-swarm",
 ]
 
 [[package]]
@@ -626,6 +627,7 @@ dependencies = [
  "flakecache-cas",
  "flakecache-crypto",
  "thiserror",
+ "ureq",
 ]
 
 [[package]]

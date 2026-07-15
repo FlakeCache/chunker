@@ -17,6 +17,7 @@ flakecache-cas = { path = "../core/cas" }
 flakecache-meta = { path = "../core/meta" }
 flakecache-crypto = { path = "../core/crypto", default-features = false, features = ["ed25519"] }
 flakecache-proto-nix = { path = "../proto/nix" }
+flakecache-swarm = { path = "../swarm" }
 
 [lints.rust]
 unsafe_code = "forbid"
